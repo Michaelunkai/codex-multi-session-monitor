@@ -18,6 +18,7 @@ $stdoutPath = Join-Path $root 'logs\tailscaled.stdout.log'
 $stderrPath = Join-Path $root 'logs\tailscaled.stderr.log'
 $authStdoutPath = Join-Path $root 'logs\tailscale-auth.stdout.log'
 $authStderrPath = Join-Path $root 'logs\tailscale-auth.stderr.log'
+$monitorPidPath = Join-Path $root 'data\monitor.pid.json'
 $publicUrlPath = Join-Path $stateRoot 'public-url.txt'
 $authUrlPath = Join-Path $stateRoot 'auth-url.txt'
 
@@ -53,6 +54,23 @@ function Invoke-Tailscale {
     [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
 }
 
+function Get-TailscaleJsonStatus {
+    $probe = Invoke-Tailscale -Arguments @('status', '--json')
+    if ($probe.ExitCode -ne 0 -or -not $probe.Output) { return $null }
+    try { return ($probe.Output | ConvertFrom-Json) } catch { return $null }
+}
+
+function Wait-ForTailscaleStatus {
+    $last = $null
+    for ($attempt = 1; $attempt -le 40; $attempt++) {
+        $last = Get-TailscaleJsonStatus
+        if ($last -and [string]$last.BackendState -ne 'Starting') { return $last }
+        Start-Sleep -Milliseconds 250
+    }
+    if ($last) { return $last }
+    throw 'The private bridge daemon did not return parseable status through its F:-resident socket.'
+}
+
 function Ensure-Daemon {
     $matches = @(Get-ExactProcess -Executable $tailscaled -RequiredText ('--socket=' + $socket))
     if ($matches.Count -gt 1) { throw 'More than one project Tailscale daemon was found; refusing to choose ambiguously.' }
@@ -67,12 +85,7 @@ function Ensure-Daemon {
         $process = Start-Process -FilePath $tailscaled -ArgumentList $arguments -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
         Write-Message ('Private bridge daemon started; PID ' + $process.Id + '.')
     }
-    for ($attempt = 1; $attempt -le 20; $attempt++) {
-        Start-Sleep -Milliseconds 250
-        $probe = Invoke-Tailscale -Arguments @('status')
-        if ($probe.Output -or $probe.ExitCode -eq 0) { return }
-    }
-    throw 'The private bridge daemon did not answer through its F:-resident socket.'
+    Wait-ForTailscaleStatus | Out-Null
 }
 
 function Get-AuthUrl {
@@ -129,7 +142,18 @@ function Get-PublicUrl {
 
 function Ensure-Funnel {
     if ($MonitorPort -lt 1024 -or $MonitorPort -gt 65500) { throw 'MonitorPort must be between 1024 and 65500.' }
-    $target = 'https+insecure://127.0.0.1:' + $MonitorPort
+    $monitorHost = '127.0.0.1'
+    if (Test-Path -LiteralPath $monitorPidPath) {
+        try {
+            $runtime = Get-Content -LiteralPath $monitorPidPath -Raw | ConvertFrom-Json
+            if ($runtime.bindHost) { $monitorHost = [string]$runtime.bindHost }
+        } catch { }
+    }
+    if ($monitorHost -match ':') {
+        $target = 'https+insecure://[' + $monitorHost + ']:' + $MonitorPort
+    } else {
+        $target = 'https+insecure://' + $monitorHost + ':' + $MonitorPort
+    }
     $configured = Invoke-Tailscale -Arguments @('funnel', '--bg', $target)
     if ($configured.ExitCode -ne 0) {
         throw ('Tailscale Funnel configuration failed: ' + $configured.Output)
@@ -168,8 +192,8 @@ switch ($Action) {
     }
     'Status' {
         $daemon = @(Get-ExactProcess -Executable $tailscaled -RequiredText ('--socket=' + $socket))
-        $probe = if ($daemon.Count -eq 1) { Invoke-Tailscale -Arguments @('status') } else { [pscustomobject]@{ ExitCode = 1; Output = 'daemon not running' } }
-        $loggedIn = ($probe.ExitCode -eq 0 -and $probe.Output -notmatch 'Logged out')
+        $status = if ($daemon.Count -eq 1) { Get-TailscaleJsonStatus } else { $null }
+        $loggedIn = [bool]($status -and [string]$status.BackendState -eq 'Running')
         $publicUrl = if (Test-Path -LiteralPath $publicUrlPath) { (Get-Content -LiteralPath $publicUrlPath -Raw).Trim() } else { '' }
         [pscustomobject]@{
             Daemon = [bool]($daemon.Count -eq 1)
@@ -181,12 +205,12 @@ switch ($Action) {
     }
     'Ensure' {
         Ensure-Daemon
-        $status = Invoke-Tailscale -Arguments @('status')
-        if ($status.Output -match 'Logged out' -or $status.ExitCode -ne 0) {
+        $status = Wait-ForTailscaleStatus
+        if ([string]$status.BackendState -ne 'Running') {
             Ensure-Auth
             break
         }
-        if ($MonitorPort) { Ensure-Funnel | Out-Null }
+        if ($MonitorPort) { Ensure-Funnel }
         break
     }
 }

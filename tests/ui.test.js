@@ -62,7 +62,7 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
   assert.equal(document.querySelectorAll('.transcript-entry').length, 12);
   document.querySelector('#copyButton').dispatchEvent(new Event('click'));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.match(copied, /^https:\/\/michaelunkai\.github\.io\/codex-multi-session-monitor-pages\/#token=test-token&endpoint=https%3A%2F%2F192\.168\.1\.129%3A8766$/);
+  assert.match(copied, /^https:\/\/michaelunkai\.github\.io\/codex-multi-session-monitor-pages\/#token=test-token&endpoint=https%3A%2F%2Fcodex-monitor\.tail5cbd67\.ts\.net$/);
 
   const changed = structuredClone(snapshot);
   changed.sessions[0].liveOutput = [{ id: 'entry-0', type: 'assistant', ordinal: 2, at: new Date().toISOString(), text: 'word-by-word stream update' }];

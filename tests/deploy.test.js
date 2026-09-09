@@ -10,7 +10,8 @@ const root = path.resolve(__dirname, '..');
 test('hosted bundle is the same running-only UI and contains no local secrets', () => {
   const source = ['index.html', 'app.js', 'styles.css'].map((name) => fs.readFileSync(path.join(root, 'app', 'public', name), 'utf8'));
   const deployed = ['index.html', 'app.js', 'styles.css'].map((name) => fs.readFileSync(path.join(root, 'deploy', name), 'utf8'));
-  assert.deepEqual(deployed, source, 'deploy bundle must be regenerated from app/public before publishing');
+  const normalizeEndpoint = (html) => html.replace(/(<meta name="codex-monitor-endpoint" content=")[^"]*(">)/, '$1$2');
+  assert.deepEqual(deployed.map(normalizeEndpoint), source.map(normalizeEndpoint), 'deploy bundle must be regenerated from app/public before publishing');
   assert.match(deployed[0], /id="cards"/);
   assert.match(deployed[1], /failClosedSnapshot/);
   assert.match(deployed[1], /endpoint/);
