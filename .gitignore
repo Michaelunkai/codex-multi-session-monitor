@@ -1,0 +1,24 @@
+# Local monitor state, credentials, runtimes, caches, and downloaded research.
+.vercel/
+.agents/
+runtime/
+cache/
+temp/
+data/
+logs/
+downloads/
+docs/
+config/monitor.json
+config/access.token
+config/tls/
+config/autostart-task.xml
+
+# Existing Codex projections must never enter the repository.
+*.sqlite
+*.sqlite-*
+*.jsonl
+*.log
+
+# Local test dependency/cache.
+tests/ui/node_modules/
+

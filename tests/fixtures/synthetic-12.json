@@ -1,0 +1,16 @@
+{
+  "sessions": [
+    { "id": "synthetic-01", "title": "Synthetic running one", "project": "alpha", "status": "RUNNING", "latestOutput": "Inspecting project alpha" },
+    { "id": "synthetic-02", "title": "Synthetic waiting one", "project": "beta", "status": "WAITING", "latestOutput": "Waiting for user input" },
+    { "id": "synthetic-03", "title": "Synthetic error one", "project": "gamma", "status": "ERROR", "latestOutput": "A controlled test error" },
+    { "id": "synthetic-04", "title": "Synthetic stuck one", "project": "delta", "status": "STUCK", "latestOutput": "No fresh write detected" },
+    { "id": "synthetic-05", "title": "Synthetic completed one", "project": "epsilon", "status": "COMPLETED", "latestOutput": "Completed successfully" },
+    { "id": "synthetic-06", "title": "Synthetic inactive one", "project": "zeta", "status": "INACTIVE", "latestOutput": "Inactive history" },
+    { "id": "synthetic-07", "title": "Synthetic unknown one", "project": "eta", "status": "UNKNOWN", "latestOutput": "Telemetry is incomplete" },
+    { "id": "synthetic-08", "title": "Synthetic running two", "project": "theta", "status": "RUNNING", "latestOutput": "Running a second stream" },
+    { "id": "synthetic-09", "title": "Synthetic waiting two", "project": "iota", "status": "WAITING", "latestOutput": "Needs attention" },
+    { "id": "synthetic-10", "title": "Synthetic completed two", "project": "kappa", "status": "COMPLETED", "latestOutput": "Second completed stream" },
+    { "id": "synthetic-11", "title": "Synthetic error two", "project": "lambda", "status": "ERROR", "latestOutput": "Second controlled error" },
+    { "id": "synthetic-12", "title": "Synthetic inactive two", "project": "mu", "status": "INACTIVE", "latestOutput": "Second inactive history" }
+  ]
+}

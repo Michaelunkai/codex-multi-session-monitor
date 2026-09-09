@@ -1,0 +1,66 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const https = require('node:https');
+const { spawn } = require('node:child_process');
+const root = path.resolve(__dirname, '..');
+const stopFile = path.join(root, 'data', 'stop.request');
+const lockFile = path.join(root, 'data', 'supervisor.lock');
+const logFile = path.join(root, 'logs', 'supervisor.log');
+const env = { ...process.env, TEMP:path.join(root,'temp'), TMP:path.join(root,'temp'),
+  PSModuleAnalysisCachePath:path.join(root,'cache','powershell-analysis'), POWERSHELL_TELEMETRY_OPTOUT:'1',
+  XDG_CACHE_HOME:path.join(root,'cache'), NODE_EXTRA_CA_CERTS:path.join(root,'config','tls','server-cert.pem') };
+function log(message) {
+  if (fs.existsSync(logFile) && fs.statSync(logFile).size > 1024*1024) fs.renameSync(logFile, logFile+'.previous');
+  fs.appendFileSync(logFile, new Date().toISOString()+' '+message.replace(/token=[a-f0-9]+/gi,'token=[redacted]')+'\n');
+}
+function read(file) { return JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'')); }
+function alive(pid) { try { process.kill(pid,0); return true; } catch { return false; } }
+function acquire() {
+  if(fs.existsSync(lockFile)) {
+    const pid=Number(fs.readFileSync(lockFile,'utf8'));
+    if(pid && alive(pid)) return false;
+    fs.unlinkSync(lockFile);
+  }
+  try {fs.writeFileSync(lockFile,String(process.pid),{flag:'wx'});return true;} catch{return false;}
+}
+function health() {
+  return new Promise(resolve=>{
+    try {
+      const cfg=read(path.join(root,'config','monitor.json'));
+      const runtime=read(path.join(root,'data','monitor.pid.json'));
+      const token=fs.readFileSync(cfg.auth.tokenFile,'utf8').trim();
+      const req=https.get({hostname:runtime.bindHost,port:runtime.port,path:'/api/health',
+        ca:fs.readFileSync(cfg.tls.certFile),headers:{Authorization:'Bearer '+token},timeout:8000}, res=>{
+        let text='';res.on('data',chunk=>text+=chunk);res.on('end',()=>{try{resolve(res.statusCode===200&&JSON.parse(text).ok);}catch{resolve(false);}});
+      });
+      req.on('timeout',()=>{req.destroy();resolve(false);});req.on('error',()=>resolve(false));
+    } catch {resolve(false);}
+  });
+}
+function launch() {
+  return new Promise(resolve=>{
+    const child=spawn(path.join(root,'runtime','powershell','pwsh.exe'),['-NoLogo','-NoProfile','-File',path.join(__dirname,'START.ps1'),'-QuietAccess'],{cwd:root,windowsHide:true,env});
+    let output='';child.stdout.on('data',d=>output+=d);child.stderr.on('data',d=>output+=d);
+    child.on('error',e=>{log('launch error: '+e.message);resolve();});
+    child.on('exit',code=>{log('START exit '+code+' '+output.trim());resolve();});
+  });
+}
+async function main(){
+  if(!acquire())return;
+  try {
+    log('Supervisor started '+process.pid);
+    // A new Windows logon is a requested automatic start, including after a prior manual STOP.
+    if(process.argv.includes('--logon') && fs.existsSync(stopFile))fs.unlinkSync(stopFile);
+    let failures=0;
+    while(!fs.existsSync(stopFile)){
+      if(await health()){failures=0;}else{
+        failures++;
+        if(failures>=2){log('Two health probes failed; recovering monitor.');await launch();failures=0;}
+      }
+      await new Promise(resolve=>setTimeout(resolve,10000));
+    }
+    log('Manual STOP observed; supervisor exiting.');
+  } finally {if(fs.existsSync(lockFile)&&fs.readFileSync(lockFile,'utf8')===String(process.pid))fs.unlinkSync(lockFile);}
+}
+main().catch(e=>{log(e.stack);process.exitCode=1;});
