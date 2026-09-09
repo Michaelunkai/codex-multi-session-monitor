@@ -20,6 +20,7 @@ if ($matches.Count -eq 0) {
 }
 if ($matches.Count -eq 0) {
     Write-Output 'Monitor is not running.'
+    & (Join-Path $PSScriptRoot 'tailscale.ps1') -Action Stop
     exit 0
 }
 if ($matches.Count -gt 1) { throw 'More than one exact monitor process was found; refusing to stop ambiguously.' }
@@ -32,3 +33,4 @@ for ($attempt = 1; $attempt -le 20; $attempt++) {
 if (Get-Process -Id $targetPid -ErrorAction SilentlyContinue) { throw ('Monitor PID ' + $targetPid + ' did not stop.') }
 [System.IO.File]::WriteAllText($pidPath, '{}', [System.Text.Encoding]::UTF8)
 Write-Output ('Monitor stopped. PID ' + $targetPid + ' was the exact F:-resident monitor process.')
+& (Join-Path $PSScriptRoot 'tailscale.ps1') -Action Stop

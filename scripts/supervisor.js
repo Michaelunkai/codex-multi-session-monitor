@@ -7,6 +7,8 @@ const root = path.resolve(__dirname, '..');
 const stopFile = path.join(root, 'data', 'stop.request');
 const lockFile = path.join(root, 'data', 'supervisor.lock');
 const logFile = path.join(root, 'logs', 'supervisor.log');
+const powershell = path.join(root, 'runtime', 'powershell', 'pwsh.exe');
+const bridgeScript = path.join(__dirname, 'tailscale.ps1');
 const env = { ...process.env, TEMP:path.join(root,'temp'), TMP:path.join(root,'temp'),
   PSModuleAnalysisCachePath:path.join(root,'cache','powershell-analysis'), POWERSHELL_TELEMETRY_OPTOUT:'1',
   XDG_CACHE_HOME:path.join(root,'cache'), NODE_EXTRA_CA_CERTS:path.join(root,'config','tls','server-cert.pem') };
@@ -38,6 +40,25 @@ function health() {
     } catch {resolve(false);}
   });
 }
+function ensureBridge(port) {
+  return new Promise(resolve => {
+    const child = spawn(powershell, ['-NoLogo', '-NoProfile', '-File', bridgeScript,
+      '-Action', 'Ensure', '-MonitorPort', String(port)],
+      { cwd: root, windowsHide: true, env });
+    let output = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve('bridge check timed out');
+    }, 15000);
+    child.stdout.on('data', data => { output += data.toString(); });
+    child.stderr.on('data', data => { output += data.toString(); });
+    child.on('error', error => { clearTimeout(timer); resolve('bridge check error: ' + error.message); });
+    child.on('exit', code => {
+      clearTimeout(timer);
+      resolve('bridge exit ' + code + (output.trim() ? ' ' + output.trim() : ''));
+    });
+  });
+}
 function launch() {
   return new Promise(resolve=>{
     const child=spawn(path.join(root,'runtime','powershell','pwsh.exe'),['-NoLogo','-NoProfile','-File',path.join(__dirname,'START.ps1'),'-QuietAccess'],{cwd:root,windowsHide:true,env});
@@ -53,8 +74,24 @@ async function main(){
     // A new Windows logon is a requested automatic start, including after a prior manual STOP.
     if(process.argv.includes('--logon') && fs.existsSync(stopFile))fs.unlinkSync(stopFile);
     let failures=0;
+    let nextBridgeCheck=0;
+    let lastBridgeResult='';
     while(!fs.existsSync(stopFile)){
-      if(await health()){failures=0;}else{
+      const monitorHealthy=await health();
+      if(monitorHealthy){
+        failures=0;
+        if(Date.now()>=nextBridgeCheck){
+          let port=0;
+          try { port=Number(read(path.join(root,'data','monitor.pid.json')).port); } catch {}
+          if(port){
+            const bridgeResult=await ensureBridge(port);
+            nextBridgeCheck=Date.now()+30000;
+            if(bridgeResult!==lastBridgeResult){ log(bridgeResult); lastBridgeResult=bridgeResult; }
+          } else {
+            nextBridgeCheck=Date.now()+10000;
+          }
+        }
+      }else{
         failures++;
         if(failures>=2){log('Two health probes failed; recovering monitor.');await launch();failures=0;}
       }

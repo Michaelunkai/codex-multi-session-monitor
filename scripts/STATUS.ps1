@@ -8,6 +8,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $configPath = Join-Path $root 'config\monitor.json'
 $pidPath = Join-Path $root 'data\monitor.pid.json'
 $tokenPath = Join-Path $root 'config\access.token'
+$publicUrlPath = Join-Path $root 'data\tailscale\public-url.txt'
 if (-not (Test-Path -LiteralPath $configPath)) { throw 'Monitor configuration is missing. Run START.ps1.' }
 $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
 $token = if (Test-Path -LiteralPath $tokenPath) { (Get-Content -LiteralPath $tokenPath -Raw).Trim() } else { '' }
@@ -32,6 +33,11 @@ if (Test-Path -LiteralPath $supervisorLock) {
         $supervisorRunning = [bool]($sp -and $sp.ExecutablePath -eq $node -and $sp.CommandLine -like ('*' + (Join-Path $root 'scripts\supervisor.js') + '*'))
     }
 }
+$bridgeStatus = $null
+try {
+    $bridgeJson = & (Join-Path $PSScriptRoot 'tailscale.ps1') -Action Status 2>$null
+    if ($bridgeJson) { $bridgeStatus = ($bridgeJson | ConvertFrom-Json) }
+} catch {}
 [pscustomobject]@{
     Running = [bool]$exact
     Supervisor = $supervisorRunning
@@ -47,7 +53,16 @@ if (Test-Path -LiteralPath $supervisorLock) {
     OutputTransport = if ($health) { [string]$health.summary.outputTransport } else { $null }
     TelemetryErrors = if ($health) { [int]$health.summary.telemetryErrorCount } else { $null }
     ReadErrors = if ($health) { ($health.summary.readErrors -join ' | ') } else { 'health unavailable' }
+    PrivateBridgeDaemon = if ($bridgeStatus) { [bool]$bridgeStatus.Daemon } else { $false }
+    PrivateBridgeLoggedIn = if ($bridgeStatus) { [bool]$bridgeStatus.LoggedIn } else { $false }
+    PrivateBridgeUrl = if ($bridgeStatus) { [string]$bridgeStatus.FunnelUrl } else { '' }
+    PrivateBridgeAuthUrl = if ($bridgeStatus) { [string]$bridgeStatus.AuthUrl } else { '' }
 } | Format-List
 if ($ShowAccessUrl -and $exact) {
-    Write-Output ('Access URL: ' + $protocol + '://' + $config.bindHost + ':' + [int]$runtime.port + '/#token=' + $token)
+    $publicEndpoint = if (Test-Path -LiteralPath $publicUrlPath) { (Get-Content -LiteralPath $publicUrlPath -Raw).Trim() } else { '' }
+    if ($publicEndpoint) {
+        Write-Output ('Hosted access URL: https://michaelunkai.github.io/codex-multi-session-monitor-pages/#token=' + $token + '&endpoint=' + [Uri]::EscapeDataString($publicEndpoint))
+    } else {
+        Write-Output ('Local access URL: ' + $protocol + '://' + $config.bindHost + ':' + [int]$runtime.port + '/#token=' + $token)
+    }
 }

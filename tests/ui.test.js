@@ -134,6 +134,7 @@ test('hosted shell accepts the private PC access URL and targets the live PC ori
 
 test('one-tap access link auto-connects, stores the token, and cleans the address bar', async () => {
   const { document, Event } = parseHTML(fs.readFileSync(path.join(root, 'app/public/index.html'), 'utf8'));
+  document.querySelector('meta[name="codex-monitor-share-endpoint"]').setAttribute('content', 'https://codex-monitor.example.ts.net');
   const adapter = createLiveAdapter(normalizeConfig({}, root), path.join(__dirname, 'fixtures/synthetic-12.json'));
   const snapshot = adapter.snapshot();
   snapshot.scope = 'running-now';
@@ -185,6 +186,6 @@ test('one-tap access link auto-connects, stores the token, and cleans the addres
   assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
   document.querySelector('#copyButton').dispatchEvent(new Event('click'));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.match(copied, /^https:\/\/michaelunkai\.github\.io\/codex-multi-session-monitor-pages\/#token=remote-test-token&endpoint=https%3A%2F%2F192\.168\.1\.129%3A8766$/);
+  assert.match(copied, /^https:\/\/michaelunkai\.github\.io\/codex-multi-session-monitor-pages\/#token=remote-test-token&endpoint=https%3A%2F%2Fcodex-monitor\.example\.ts\.net$/);
   adapter.close();
 });

@@ -133,6 +133,23 @@ function Get-Health {
     }
 }
 
+function Ensure-PrivateBridge {
+    param([int]$MonitorPort)
+    $bridgeScript = Join-Path $PSScriptRoot 'tailscale.ps1'
+    try {
+        $bridgeOutput = @(& $bridgeScript -Action Ensure -MonitorPort $MonitorPort 2>&1)
+        foreach ($line in $bridgeOutput) {
+            if ($line) {
+                Write-StartLog ('Bridge: ' + [string]$line)
+            }
+        }
+        return
+    } catch {
+        Write-StartLog ('Bridge is not ready: ' + $_.Exception.Message)
+        return
+    }
+}
+
 $bindHost = if ($LocalOnly) { '127.0.0.1' } else { Get-PrivateBindAddress }
 if (-not (Test-Path -LiteralPath $node)) { throw ('Portable Node runtime missing: ' + $node) }
 if (-not (Test-Path -LiteralPath $serverScript)) { throw ('Monitor server missing: ' + $serverScript) }
@@ -154,7 +171,8 @@ if ($existing -and $existing.pid) {
         if ($health -and $health.ok) {
             Write-StartLog ('Monitor already running; PID ' + $existing.pid + '.')
             Write-Output ('Dashboard: ' + $existingProtocol + '://' + $existingHost + ':' + $existing.port + '/')
-            if (-not $QuietAccess) { Write-Output ('Android/private access URL: ' + $existingProtocol + '://' + $existingHost + ':' + $existing.port + '/#token=' + $token) }
+            if (-not $QuietAccess) { Write-Output 'Private access: use the deployed Copy access link button or STATUS.cmd -ShowAccessUrl when intentionally generating a link.' }
+            Ensure-PrivateBridge -MonitorPort ([int]$existing.port)
             Ensure-Supervisor
             exit 0
         }
@@ -200,14 +218,15 @@ if (-not $health -or -not $health.ok) {
 }
 
 Write-StartLog ('Healthy monitor on ' + $protocol + '://' + $bindHost + ':' + $listenPort + '.')
+Ensure-PrivateBridge -MonitorPort $listenPort
 Write-Output ''
 Write-Output 'Codex Multi-Session Monitor is ready.'
 Write-Output ('Dashboard: ' + $protocol + '://' + $bindHost + ':' + $listenPort + '/')
 if ($bindHost -eq '127.0.0.1') {
     Write-Output 'Android access: unavailable on localhost; run START.ps1 after joining a private LAN or use -LocalOnly only for PC diagnostics.'
 } else {
-    Write-Output 'Android: run STATUS.cmd -ShowAccessUrl locally to obtain the private tokenized URL; the token is intentionally not printed by START.'
-    Write-Output 'The Android URL is private-LAN HTTPS. Accept the one-time self-signed certificate warning only for this PC address.'
+    Write-Output 'Android: the deployed access link uses the private bridge when authorization is complete; the token is intentionally not printed by START.'
+    Write-Output 'If Tailscale authorization is pending, open the authorization URL shown above once; the supervisor will finish the bridge automatically.'
 }
 Write-Output ('Token file: ' + (Join-Path $root 'config\access.token'))
 Write-Output ('Logs: ' + $logRoot)
