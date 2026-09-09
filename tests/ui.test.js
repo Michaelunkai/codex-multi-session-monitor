@@ -31,6 +31,7 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
   snapshot.summary.relevantCount = 12;
 
   const streams = [];
+  let copied = '';
   class FakeEventSource {
     constructor(url) { this.url = url; this.listeners = {}; streams.push(this); }
     addEventListener(name, fn) { this.listeners[name] = fn; }
@@ -46,7 +47,7 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
   const context = {
     document, window, EventSource: FakeEventSource, URLSearchParams, console, Set, Date, encodeURIComponent,
     setInterval() { return 1; }, clearInterval() {}, setTimeout() { return 1; }, clearTimeout() {},
-    navigator: { clipboard: { writeText: async () => {} } },
+    navigator: { clipboard: { writeText: async (value) => { copied = value; } } },
     fetch: async () => ({ ok: true, json: async () => snapshot })
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
@@ -59,6 +60,9 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .live-transcript').textContent, /complete live output/);
   assert.equal(document.querySelectorAll('.transcript-entry').length, 12);
+  document.querySelector('#copyButton').dispatchEvent(new Event('click'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(copied, /^https:\/\/michaelunkai\.github\.io\/codex-multi-session-monitor-pages\/#token=test-token&endpoint=https%3A%2F%2F192\.168\.1\.129%3A8766$/);
 
   const changed = structuredClone(snapshot);
   changed.sessions[0].liveOutput = [{ id: 'entry-0', type: 'assistant', ordinal: 2, at: new Date().toISOString(), text: 'word-by-word stream update' }];
