@@ -139,6 +139,7 @@ test('one-tap access link auto-connects, stores the token, and cleans the addres
   const values = new Map();
   const replaced = [];
   const requests = [];
+  let copied = '';
   class FakeEventSource {
     constructor(url) { this.url = url; this.listeners = {}; }
     addEventListener(name, fn) { this.listeners[name] = fn; }
@@ -164,7 +165,7 @@ test('one-tap access link auto-connects, stores the token, and cleans the addres
   const context = {
     document, window, EventSource: FakeEventSource, URLSearchParams, console, Set, Date, encodeURIComponent,
     setInterval() { return 1; }, clearInterval() {}, setTimeout() { return 1; }, clearTimeout() {},
-    navigator: { clipboard: { writeText: async () => {} } },
+    navigator: { clipboard: { writeText: async (value) => { copied = value; } } },
     fetch: async (url, options) => {
       requests.push({ url, options });
       return { ok: true, json: async () => snapshot };
@@ -178,5 +179,8 @@ test('one-tap access link auto-connects, stores the token, and cleans the addres
   assert.equal(replaced[0], 'https://michaelunkai.github.io/codex-multi-session-monitor-pages/');
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
   assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
+  document.querySelector('#copyButton').dispatchEvent(new Event('click'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(copied, /^https:\/\/michaelunkai\.github\.io\/codex-multi-session-monitor-pages\/#token=remote-test-token&endpoint=https%3A%2F%2F192\.168\.1\.129%3A8766$/);
   adapter.close();
 });
