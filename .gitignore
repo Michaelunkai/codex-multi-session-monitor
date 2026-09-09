@@ -8,6 +8,7 @@ data/
 logs/
 downloads/
 docs/
+public-site/
 config/monitor.json
 config/access.token
 config/tls/
@@ -21,4 +22,3 @@ config/autostart-task.xml
 
 # Local test dependency/cache.
 tests/ui/node_modules/
-
