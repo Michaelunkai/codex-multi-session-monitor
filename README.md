@@ -6,7 +6,7 @@ Published static shell: https://michaelunkai.github.io/codex-multi-session-monit
 
 Private source: https://github.com/Michaelunkai/codex-multi-session-monitor  ·  Pages-only UI source: https://github.com/Michaelunkai/codex-multi-session-monitor-pages
 
-The hosted shell contains no Codex data. It connects directly to the authenticated F: monitor after the user pastes the complete private PC access URL.
+The hosted shell contains no Codex data or bearer token. The published page has the current PC's non-secret LAN endpoint built in. The private one-tap access link supplied with a running monitor carries the access fragment once; the page connects automatically, stores the token in browser storage, and removes the fragment from the visible address bar.
 
 ## Architecture and exact versions
 
@@ -65,18 +65,18 @@ Automatic startup is registered as the Windows task `Codex-MultiSession-Monitor`
 
 ## Android: exact use
 
-1. On the PC, run `F:\backup\windowsapps\installed\Codex-MultiSession-Monitor\scripts\STATUS.cmd -ShowAccessUrl` (or double-click START.cmd first).
+1. On the PC, run `F:\backup\windowsapps\installed\Codex-MultiSession-Monitor\scripts\START.cmd` (or use the already-running monitor).
 2. Keep the Android phone and PC on the same private Wi-Fi/LAN.
-3. Copy the complete **Android/private access URL** printed by the command. It looks like `https://192.168.1.129:8766/#token=...`; the token is intentionally in the URL fragment.
-4. Open that complete PC link in Chrome on Android once. Accept the one-time warning for the local self-signed certificate, if shown.
-5. Open the published Pages URL above. Paste the complete PC URL into **Connect this wall**, then tap **Connect live wall**.
-6. Bookmark the connected Pages URL. Leave it open: SSE updates the wall automatically. Scroll vertically to inspect every running session; scroll inside a card's transcript pane to read its current output.
+3. Open the private **one-tap access link supplied in the handoff**. It opens the published Pages wall, targets the configured PC automatically, authenticates once, and immediately renders the running-only cards. Do not share that link.
+4. If Android shows the local self-signed certificate warning the first time, verify that the address is `192.168.1.129:8766` and accept it once; this is a browser trust boundary, not a dashboard form step.
+5. After the first successful open, bookmark the bare Pages URL above. The token is retained only in that browser's local storage, the URL fragment is removed, and the wall reconnects automatically while the monitor is reachable.
+6. Leave the wall open: SSE updates automatically. Scroll vertically to inspect every running session; scroll inside a card's transcript pane to read its current output.
 
-Use the full URL, not the bare IP/port. Do not share it: it contains the local bearer token. If the PC changes private IP or port, obtain a new URL from STATUS. This is private-LAN access only; cellular/off-LAN access requires a separately authorized VPN and none is installed by this project.
+Use the one-tap URL, not the bare IP/port. Do not share it: it contains the local bearer token. The token is not in GitHub, Pages, or the project source. If the PC changes private IP or port, the published shell's built-in endpoint must be updated and a new one-tap URL generated. This is private-LAN access only; cellular/off-LAN access requires a separately authorized VPN and none is installed by this project.
 
 ## Security model
 
-The server binds only to a private RFC1918 interface, uses HTTPS, requires the bearer token for health, snapshots, and SSE, accepts GET/HEAD plus exact-origin preflight, allows CORS only for the published Pages origin, and uses no-store/no-referrer headers. The static shell contains no session data. Token and private-key ACLs are limited to the current user and SYSTEM. No public tunnel, unrestricted listener, SMB/RDP rule, firewall weakening, or authentication bypass was added.
+The server binds only to a private RFC1918 interface, uses HTTPS, requires the bearer token for health, snapshots, and SSE, accepts GET/HEAD plus exact-origin preflight, allows CORS only for the published Pages origin, and uses no-store/no-referrer headers. The static shell contains no session data. Token and private-key ACLs are limited to the current user and SYSTEM. The one-tap URL is a private bearer link; the token is not in GitHub or Pages and is moved to browser local storage, then removed from the visible URL after connection. No public tunnel, unrestricted listener, SMB/RDP rule, firewall weakening, or authentication bypass was added.
 
 Windows and Codex may create unavoidable metadata outside F:. This project redirects its runtimes, dependencies, caches, temporary files, configuration, state, logs, certificates, and scripts to this root wherever technically controllable. The existing Codex installation and state were preserved.
 
@@ -100,11 +100,11 @@ docs/ .agents/       project notes and research evidence
 
 ## Troubleshooting
 
-- **401 or Token needed:** use the complete URL from START or `STATUS.cmd -ShowAccessUrl`; do not open the bare API URL.
+- **401 or Token needed:** reopen the private one-tap URL from the handoff. If the token was intentionally cleared or browser storage was reset, generate a new private link with `STATUS.cmd -ShowAccessUrl`.
 - **Certificate warning:** expected once for the local self-signed certificate. Verify the URL is the PC's private address before accepting it.
 - **No cards:** STATUS should report `RunningSessions`. A session is hidden immediately after its durable terminal event or after its 20-second rollout freshness window expires.
 - **No Android connection:** confirm both devices are on the same private LAN, use the current STATUS URL, and run `HEALTH.ps1`. No global firewall change is made automatically.
-- **Published shell cannot connect:** the Pages URL is only a static shell. First trust the PC HTTPS URL on the phone, then paste the complete tokenized PC URL into the connection panel. Cellular/off-LAN access requires a separately authorized VPN or tunnel, which this project does not install.
+- **Published shell cannot connect:** confirm the phone and PC share the private LAN, confirm the one-tap URL was opened rather than the bare URL on a new browser, and check the one-time certificate trust. Cellular/off-LAN access requires a separately authorized VPN or tunnel, which this project does not install.
 - **Telemetry errors:** inspect `STATUS.ps1`, `logs\server.stderr.log`, and the current Codex source paths. A nonzero telemetry-error count can represent old/missing rollout references and does not turn stale sessions into RUNNING cards.
 - **Need to act on a task:** use official Codex Remote or the Codex Desktop app; this dashboard is read-only.
 
