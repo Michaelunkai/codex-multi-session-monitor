@@ -1,0 +1,19 @@
+# Deploy only the static hosted wall; never upload local state or runtimes.
+runtime/
+cache/
+temp/
+data/
+logs/
+downloads/
+config/
+.agents/
+docs/
+app/server.js
+app/public/
+scripts/
+tests/
+findings.md
+progress.md
+task_plan.md
+README.md
+.git/
