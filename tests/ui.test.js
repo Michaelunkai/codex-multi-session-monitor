@@ -69,3 +69,61 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"]').textContent, /word-by-word stream update/);
   adapter.close();
 });
+
+test('hosted shell accepts the private PC access URL and targets the live PC origin', async () => {
+  const { document, Event } = parseHTML(fs.readFileSync(path.join(root, 'app/public/index.html'), 'utf8'));
+  const adapter = createLiveAdapter(normalizeConfig({}, root), path.join(__dirname, 'fixtures/synthetic-12.json'));
+  const snapshot = adapter.snapshot();
+  const base = snapshot.sessions[0];
+  snapshot.sessions = Array.from({ length: 12 }, (_, index) => ({
+    ...base,
+    id: 'remote-synthetic-' + String(index + 1).padStart(2, '0'),
+    title: 'Remote live session ' + (index + 1),
+    status: 'RUNNING',
+    liveOutput: [{ id: 'remote-output-' + index, type: 'assistant', ordinal: 1, at: new Date().toISOString(), text: 'remote live output ' + (index + 1) }]
+  }));
+  snapshot.summary.runningCount = 12;
+  snapshot.summary.relevantCount = 12;
+  snapshot.scope = 'running-now';
+  snapshot.displayMode = 'running-only';
+  const requests = [];
+  const streams = [];
+  class FakeEventSource {
+    constructor(url) { this.url = url; this.listeners = {}; streams.push(this); }
+    addEventListener(name, fn) { this.listeners[name] = fn; }
+    close() { this.closed = true; }
+  }
+  const window = {
+    location: {
+      href: 'https://michaelunkai.github.io/codex-multi-session-monitor-pages/',
+      origin: 'https://michaelunkai.github.io',
+      pathname: '/codex-multi-session-monitor-pages/',
+      search: '',
+      hash: ''
+    },
+    URL,
+    history: { replaceState() {} },
+    EventSource: FakeEventSource
+  };
+  const context = {
+    document, window, EventSource: FakeEventSource, URLSearchParams, console, Set, Date, URL, encodeURIComponent,
+    setInterval() { return 1; }, clearInterval() {}, setTimeout() { return 1; }, clearTimeout() {},
+    navigator: { clipboard: { writeText: async () => {} } },
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, json: async () => snapshot };
+    }
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
+  document.dispatchEvent(new Event('DOMContentLoaded'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), false);
+  document.querySelector('#accessInput').value = 'https://192.168.1.129:8766/#token=remote-test-token';
+  document.querySelector('#connectButton').dispatchEvent(new Event('click'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(requests[0].url, /^https:\/\/192\.168\.1\.129:8766\/api\/snapshot\?token=remote-test-token$/);
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer remote-test-token');
+  assert.match(streams[0].url, /^https:\/\/192\.168\.1\.129:8766\/events\?token=remote-test-token$/);
+  assert.equal(document.querySelectorAll('.session-card').length, 12);
+  adapter.close();
+});
