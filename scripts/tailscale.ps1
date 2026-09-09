@@ -102,7 +102,8 @@ function Ensure-Auth {
             'up',
             '--hostname=codex-monitor',
             '--accept-dns=false',
-            '--accept-routes=false'
+            '--accept-routes=false',
+            '--unattended=true'
         )
         Start-Process -FilePath $tailscale -ArgumentList $arguments -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $authStdoutPath -RedirectStandardError $authStderrPath | Out-Null
         Start-Sleep -Milliseconds 500
