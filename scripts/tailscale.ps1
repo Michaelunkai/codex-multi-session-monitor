@@ -62,9 +62,9 @@ function Get-TailscaleJsonStatus {
 
 function Wait-ForTailscaleStatus {
     $last = $null
-    for ($attempt = 1; $attempt -le 40; $attempt++) {
+    for ($attempt = 1; $attempt -le 120; $attempt++) {
         $last = Get-TailscaleJsonStatus
-        if ($last -and [string]$last.BackendState -ne 'Starting') { return $last }
+        if ($last -and [string]$last.BackendState -in @('Running', 'NeedsLogin', 'NeedsMachineAuth', 'Stopped', 'GoingOffline')) { return $last }
         Start-Sleep -Milliseconds 250
     }
     if ($last) { return $last }

@@ -112,13 +112,7 @@ function Ensure-Supervisor {
             if ($supervisorProcess -and $supervisorProcess.ExecutablePath -eq $node -and $supervisorProcess.CommandLine -like ('*' + $supervisorScript + '*')) { return }
         }
     }
-    $scheduler = Join-Path $env:WINDIR 'System32\schtasks.exe'
-    & $scheduler /Query /TN 'Codex-MultiSession-Monitor' 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        & $scheduler /Run /TN 'Codex-MultiSession-Monitor' | Out-Null
-    } else {
-        Start-Process -FilePath $node -ArgumentList @($supervisorScript) -WorkingDirectory $root -WindowStyle Hidden | Out-Null
-    }
+    Start-Process -FilePath $node -ArgumentList @($supervisorScript) -WorkingDirectory $root -WindowStyle Hidden | Out-Null
 }
 
 function Get-Health {
