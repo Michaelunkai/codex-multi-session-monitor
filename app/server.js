@@ -8,7 +8,7 @@ const https = require('node:https');
 const { URL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 
-const SERVER_VERSION = '2.0.0';
+const SERVER_VERSION = '2.0.1';
 const DEFAULT_PORT = 8765;
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_LIVE_WINDOW_SECONDS = 20;
@@ -1088,8 +1088,41 @@ function publicSnapshot(internal, scope) {
   };
 }
 
-function authMatches(request, url, expectedToken, required) {
+function normalizeRemoteAddress(value) {
+  const address = nonEmpty(value);
+  if (address === '::1') return '127.0.0.1';
+  if (address.toLowerCase().startsWith('::ffff:')) return address.slice(7);
+  return address;
+}
+
+function hostNameFromHeader(value) {
+  const header = nonEmpty(value);
+  if (!header) return '';
+  try {
+    return normalizeRemoteAddress(new URL('http://' + header).hostname);
+  } catch {
+    return normalizeRemoteAddress(header.replace(/^\[|\]$/g, '').replace(/:\d+$/, ''));
+  }
+}
+
+function isLocalPcRequest(request, config) {
+  const remoteAddress = normalizeRemoteAddress(request && request.socket && request.socket.remoteAddress);
+  const bindHost = normalizeRemoteAddress(config && config.bindHost);
+  if (!bindHost || bindHost === '0.0.0.0' || bindHost === '::') return false;
+  const localPeer = remoteAddress === '127.0.0.1' || remoteAddress === bindHost;
+  if (!localPeer) return false;
+  // Funnel/Serve can proxy through this same PC. Requiring the local Host
+  // prevents that public hostname from inheriting the local-PC exception.
+  return hostNameFromHeader(request && request.headers && request.headers.host) === bindHost;
+}
+
+function authMatches(request, url, expectedToken, required, config) {
   if (!required) return true;
+  // The PC that owns this monitor is the default local client. Every other
+  // network client, including LAN, Tailscale, and Funnel clients, still needs
+  // the bearer token. This decision is based on the TCP peer address rather
+  // than a spoofable Host or Origin header.
+  if (isLocalPcRequest(request, config)) return true;
   const header = nonEmpty(request.headers.authorization);
   const bearer = /^Bearer\s+(.+)$/i.exec(header);
   const supplied = bearer ? bearer[1].trim() : nonEmpty(url.searchParams.get('token'));
@@ -1261,7 +1294,7 @@ function startServer(options = {}) {
       return;
     }
     if (url.pathname === '/api/health' || url.pathname === '/api/liveness' || url.pathname === '/api/snapshot' || url.pathname === '/events') {
-      if (!authMatches(request, url, token, config.auth.required)) {
+      if (!authMatches(request, url, token, config.auth.required, config)) {
         jsonResponse(response, 401, { error: 'Authentication required.' });
         return;
       }

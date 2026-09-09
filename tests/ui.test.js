@@ -132,6 +132,48 @@ test('hosted shell accepts the private PC access URL and targets the live PC ori
   adapter.close();
 });
 
+test('same-origin PC wall connects without a bearer link while remote shell stays gated', async () => {
+  const { document, Event } = parseHTML(fs.readFileSync(path.join(root, 'app/public/index.html'), 'utf8'));
+  const adapter = createLiveAdapter(normalizeConfig({}, root), path.join(__dirname, 'fixtures/synthetic-12.json'));
+  const snapshot = adapter.snapshot();
+  snapshot.scope = 'running-now';
+  snapshot.displayMode = 'running-only';
+  snapshot.sessions = snapshot.sessions.filter((session) => session.status === 'RUNNING');
+  snapshot.summary.runningCount = snapshot.sessions.length;
+  snapshot.summary.relevantCount = snapshot.sessions.length;
+  const requests = [];
+  const streams = [];
+  class FakeEventSource {
+    constructor(url) { this.url = url; this.listeners = {}; streams.push(this); }
+    addEventListener(name, fn) { this.listeners[name] = fn; }
+    close() { this.closed = true; }
+  }
+  const window = {
+    location: { href: 'https://192.168.1.129:8766/', origin: 'https://192.168.1.129:8766', pathname: '/', search: '', hash: '' },
+    URL,
+    history: { replaceState() {} },
+    EventSource: FakeEventSource
+  };
+  const context = {
+    document, window, EventSource: FakeEventSource, URLSearchParams, console, Set, Date, URL, encodeURIComponent,
+    setInterval() { return 1; }, clearInterval() {}, setTimeout() { return 1; }, clearTimeout() {},
+    navigator: { clipboard: { writeText: async () => {} } },
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, json: async () => snapshot };
+    }
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
+  document.dispatchEvent(new Event('DOMContentLoaded'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
+  assert.equal(requests[0].url, 'https://192.168.1.129:8766/api/snapshot');
+  assert.equal(requests[0].options.headers, undefined);
+  assert.equal(streams[0].url, 'https://192.168.1.129:8766/events');
+  assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
+  adapter.close();
+});
+
 test('one-tap access link auto-connects, stores the token, and cleans the address bar', async () => {
   const { document, Event } = parseHTML(fs.readFileSync(path.join(root, 'app/public/index.html'), 'utf8'));
   document.querySelector('meta[name="codex-monitor-share-endpoint"]').setAttribute('content', 'https://codex-monitor.example.ts.net');

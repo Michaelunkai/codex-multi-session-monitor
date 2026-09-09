@@ -10,7 +10,7 @@ The hosted shell contains no Codex data or bearer token. It has the current PC's
 
 ## Architecture and exact versions
 
-- Adapter/server: `2.0.0`, dependency-free Node.js production code.
+- Adapter/server: `2.0.1`, dependency-free Node.js production code.
 - Portable Node.js: `v24.21.0` Windows x64, stored in `runtime\node` and using built-in `node:sqlite`.
 - Portable PowerShell launcher: `7.6.6`, stored in `runtime\powershell`.
 - Test-only DOM dependency: LinkeDOM `0.18.12`; its package cache and dependencies are under this root.
@@ -59,14 +59,14 @@ Use the obvious wrappers from any normal Windows shell:
 & 'F:\backup\windowsapps\installed\Codex-MultiSession-Monitor\scripts\STOP.cmd'
 ```
 
-The wrappers force the portable F:-resident PowerShell runtime; this avoids Windows PowerShell 5.1 certificate-option differences. START sets TEMP/TMP and package caches under F:, validates the portable runtimes and source paths, avoids duplicate monitor instances, selects a free port, starts the monitor and private bridge, waits for authenticated full health, and never prints the bearer token. The supervisor uses a separate authenticated lightweight liveness probe so a large telemetry snapshot cannot trigger a false restart, and re-establishes the bridge after monitor or daemon recovery. Use `STATUS.cmd -ShowAccessUrl` only when intentionally generating the private one-tap hosted URL. Restart is STOP followed by START. All controlled logs are under `logs`.
+The wrappers force the portable F:-resident PowerShell runtime; this avoids Windows PowerShell 5.1 certificate-option differences. START sets TEMP/TMP and package caches under F:, validates the portable runtimes and source paths, avoids duplicate monitor instances, selects a free port, starts the monitor and private bridge, waits for authenticated full health, and never prints the bearer token. The supervisor uses a separate authenticated lightweight liveness probe so a large telemetry snapshot cannot trigger a false restart, and re-establishes the bridge after monitor or daemon recovery. On the PC itself, opening the local dashboard address connects automatically with no access link; `STATUS.cmd -ShowAccessUrl` is only for another machine. Restart is STOP followed by START. All controlled logs are under `logs`.
 
 Automatic startup is registered as the Windows task `Codex-MultiSession-Monitor`, using the current interactive user at least privilege and the F:-resident supervisor. It starts after logon and restarts the monitor after health failures. STOP intentionally signals the supervisor to exit. Use `ENABLE-AUTOSTART.ps1` and `DISABLE-AUTOSTART.ps1` to manage that one task. Windows task metadata is the only intentional OS registration outside F:; no service, global PATH change, firewall rule, or certificate-store entry is installed.
 
 ## Android: exact use
 
-1. On the PC, run `F:\backup\windowsapps\installed\Codex-MultiSession-Monitor\scripts\START.cmd` (or use the already-running monitor).
-2. Open the private **one-tap hosted access link** shown by `STATUS.cmd -ShowAccessUrl` or copied by the dashboard's `Copy access link` button. It opens the published Pages wall, targets the stable private bridge automatically, authenticates once, and immediately renders the running-only cards. Do not share that link.
+1. On the PC, run `F:\backup\windowsapps\installed\Codex-MultiSession-Monitor\scripts\START.cmd` (or use the already-running monitor). The PC-local address `https://192.168.1.129:8766/` is the default local wall and connects automatically; it does not require a bearer link.
+2. On Android or another machine, open the private **one-tap hosted access link** shown by `STATUS.cmd -ShowAccessUrl` or copied by the dashboard's `Copy access link` button. It opens the published Pages wall, targets the stable private bridge automatically, authenticates once, and immediately renders the running-only cards. Do not share that link.
 3. No same-Wi-Fi requirement or local certificate exception is needed: the bridge uses Tailscale's HTTPS endpoint. Cellular access works while the PC is online and the Funnel node remains connected.
 4. After the first successful open, bookmark the bare Pages URL. The token is retained only in that browser's local storage, the URL fragment is removed, and that device reconnects automatically after refresh or a monitor restart. A new device must receive a fresh copied one-tap link once; it will then retain its own local authorization.
 5. Leave the wall open: authenticated SSE updates automatically, with polling fallback. Scroll vertically to inspect every running session; scroll inside each card's transcript pane to read its current output.
@@ -75,7 +75,7 @@ Use the one-tap hosted URL, not the bare IP/port. Do not share it: it contains t
 
 ## Security model
 
-The server binds only to a private RFC1918 interface, uses HTTPS, requires the bearer token for health, snapshots, and SSE, accepts GET/HEAD plus exact-origin preflight, allows CORS only for the published Pages origin, and uses no-store/no-referrer headers. Tailscale Funnel supplies the stable public transport, but the monitor's bearer token remains required at the origin; a random internet visitor receives 401. The static shell contains no session data. Token and private-key ACLs are limited to the current user and SYSTEM. The one-tap URL is a private bearer link; the token is not in GitHub or Pages and is moved to browser local storage, then removed from the visible URL after connection. No unrestricted listener, SMB/RDP rule, firewall weakening, or authentication bypass was added.
+The server binds only to a private RFC1918 interface, uses HTTPS, and authorizes protected health, snapshot, and SSE requests without a bearer token only when the TCP peer is loopback or the monitor's own bound interface on this PC. LAN, Tailscale, Funnel, and all other network clients still require the bearer token. It accepts GET/HEAD plus exact-origin preflight, allows CORS only for the published Pages origin, and uses no-store/no-referrer headers. Tailscale Funnel supplies the stable public transport, but the monitor's bearer token remains required at the origin; a random internet visitor receives 401. The static shell contains no session data. Token and private-key ACLs are limited to the current user and SYSTEM. The one-tap URL is a private bearer link; the token is not in GitHub or Pages and is moved to browser local storage, then removed from the visible URL after connection. No unrestricted listener, SMB/RDP rule, firewall weakening, or authentication bypass was added.
 
 Windows and Codex may create unavoidable metadata outside F:. This project redirects its runtimes, dependencies, caches, temporary files, configuration, state, logs, certificates, and scripts to this root wherever technically controllable. The existing Codex installation and state were preserved.
 
@@ -100,7 +100,8 @@ docs/ .agents/       project notes and research evidence
 
 ## Troubleshooting
 
-- **401 or Token needed:** reopen the private one-tap URL from the handoff. If the token was intentionally cleared or browser storage was reset, generate a new private link with `STATUS.cmd -ShowAccessUrl`.
+- **PC shows Token needed:** open the exact local address printed by `STATUS.cmd` (`https://192.168.1.129:8766/`) on this PC. The local wall is token-free; the private one-tap link is only for Android or another machine.
+- **Android/remote shows 401 or Token needed:** reopen the private one-tap URL from the handoff. If the token was intentionally cleared or browser storage was reset, generate a new private link with `STATUS.cmd -ShowAccessUrl`.
 - **Certificate warning:** the hosted Funnel URL has a public HTTPS certificate. A certificate warning on the hosted URL indicates a wrong URL or a broken bridge and should not be bypassed.
 - **No cards:** STATUS should report `RunningSessions`. A session is hidden immediately after its durable terminal event or after its 20-second rollout freshness window expires.
 - **No Android connection:** run `STATUS.cmd`; `PrivateBridgeLoggedIn` must be `True` and `PrivateBridgeUrl` must be populated. Then use a newly generated `STATUS.cmd -ShowAccessUrl` link. No global firewall change is made automatically.
