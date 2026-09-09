@@ -1216,6 +1216,18 @@ function startServer(options = {}) {
     };
   }
 
+  function livenessBody() {
+    return {
+      ok: true,
+      serverVersion: SERVER_VERSION,
+      protocol: config.tls.enabled ? 'https' : 'http',
+      bindHost: config.bindHost,
+      port: server && server.address() && server.address().port ? server.address().port : config.port,
+      generatedAt: new Date().toISOString(),
+      readOnly: true
+    };
+  }
+
   function requestHandler(request, response) {
     let url;
     try {
@@ -1226,7 +1238,7 @@ function startServer(options = {}) {
     }
     const corsAllowed = setCorsHeaders(response, request, config);
     if (request.method === 'OPTIONS') {
-      if (!corsAllowed || !['/api/health', '/api/snapshot', '/events'].includes(url.pathname)) {
+      if (!corsAllowed || !['/api/health', '/api/liveness', '/api/snapshot', '/events'].includes(url.pathname)) {
         response.writeHead(403, { 'Cache-Control': 'no-store' });
         response.end();
         return;
@@ -1248,13 +1260,17 @@ function startServer(options = {}) {
       response.end();
       return;
     }
-    if (url.pathname === '/api/health' || url.pathname === '/api/snapshot' || url.pathname === '/events') {
+    if (url.pathname === '/api/health' || url.pathname === '/api/liveness' || url.pathname === '/api/snapshot' || url.pathname === '/events') {
       if (!authMatches(request, url, token, config.auth.required)) {
         jsonResponse(response, 401, { error: 'Authentication required.' });
         return;
       }
       if (url.pathname === '/api/health') {
         jsonResponse(response, 200, healthBody());
+        return;
+      }
+      if (url.pathname === '/api/liveness') {
+        jsonResponse(response, 200, livenessBody());
         return;
       }
       if (url.pathname === '/api/snapshot') {

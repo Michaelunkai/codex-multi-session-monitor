@@ -82,6 +82,7 @@ function streamProof() {
 (async () => {
   const results = await Promise.all([
     get('/api/health'),
+    get('/api/liveness'),
     get('/api/snapshot?scope=all'),
     get('/api/health', false),
     get('/'),
@@ -89,19 +90,22 @@ function streamProof() {
     get('/styles.css')
   ]);
   const health = JSON.parse(results[0].body);
-  const live = JSON.parse(results[1].body);
+  const liveness = JSON.parse(results[1].body);
+  const live = JSON.parse(results[2].body);
   assert.equal(health.ok, true);
+  assert.equal(liveness.ok, true);
+  assert.equal(liveness.readOnly, true);
   assert.equal(results[0].headers['access-control-allow-origin'], 'https://michaelunkai.github.io');
-  assert.equal(results[1].headers['access-control-allow-origin'], 'https://michaelunkai.github.io');
-  assert.equal(results[2].status, 401);
+  assert.equal(results[2].headers['access-control-allow-origin'], 'https://michaelunkai.github.io');
+  assert.equal(results[3].status, 401);
   assert.equal(live.scope, 'running-now');
   assert.equal(live.summary.displayMode, 'running-only');
   assert.equal(new Set(live.sessions.map((session) => session.id)).size, live.sessions.length);
   assert.equal(live.sessions.every((session) => session.status === 'RUNNING'), true);
   assert.equal(live.sessions.every((session) => Array.isArray(session.liveOutput)), true);
-  assert.match(results[3].body, /Live wall/);
-  assert.match(results[4].body, /renderTranscript/);
-  assert.match(results[5].body, /\.live-transcript/);
+  assert.match(results[4].body, /Live wall/);
+  assert.match(results[5].body, /renderTranscript/);
+  assert.match(results[6].body, /\.live-transcript/);
   const current = live.sessions.find((session) => session.id === '01a08737-04b6-7143-832f-25e6c32126c1');
   assert.ok(current, 'current Codex monitor task must be visible as a live card');
   assert.ok(current.liveOutput.length > 0, 'current live card must expose durable output');
@@ -120,7 +124,7 @@ function streamProof() {
     address: 'https://' + cfg.bindHost + ':' + cfg.port,
     tls: 'Certificate pinned to generated project certificate; hostname verified',
     health: true,
-    unauthenticatedStatus: results[2].status,
+    unauthenticatedStatus: results[3].status,
     discoveredNonArchived: live.summary.totalNonArchived,
     runningSessions: live.sessions.length,
     hiddenHistory: live.summary.hiddenNonRunningCount,
@@ -128,7 +132,7 @@ function streamProof() {
     allCardsRunning: live.sessions.every((session) => session.status === 'RUNNING'),
     currentTask: { id: current.id, status: current.status, turnId: current.latestTurnId, outputEntries: current.liveOutput.length, outputChars: current.outputChars },
     exactDurableOutputMatch: exactOutputMatch,
-    assets: results.slice(3).map((result) => ({ status: result.status, bytes: result.body.length })),
+    assets: results.slice(4).map((result) => ({ status: result.status, bytes: result.body.length })),
     stream,
     readErrors: health.summary.readErrors,
     telemetryErrors: health.summary.telemetryErrorCount,

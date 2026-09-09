@@ -100,6 +100,7 @@ function streamProof(ip) {
   const ip = await resolvePublicAddress(endpointUrl.hostname);
   const results = await Promise.all([
     get(ip, '/api/health'),
+    get(ip, '/api/liveness'),
     get(ip, '/api/snapshot?scope=all'),
     get(ip, '/api/health', false),
     get(ip, '/'),
@@ -107,21 +108,24 @@ function streamProof(ip) {
     get(ip, '/styles.css')
   ]);
   const health = JSON.parse(results[0].body);
-  const live = JSON.parse(results[1].body);
+  const liveness = JSON.parse(results[1].body);
+  const live = JSON.parse(results[2].body);
   assert.equal(health.ok, true);
+  assert.equal(liveness.ok, true);
+  assert.equal(liveness.readOnly, true);
   assert.equal(results[0].status, 200);
   assert.equal(results[0].headers['access-control-allow-origin'], 'https://michaelunkai.github.io');
-  assert.equal(results[1].status, 200);
-  assert.equal(results[1].headers['access-control-allow-origin'], 'https://michaelunkai.github.io');
-  assert.equal(results[2].status, 401);
+  assert.equal(results[2].status, 200);
+  assert.equal(results[2].headers['access-control-allow-origin'], 'https://michaelunkai.github.io');
+  assert.equal(results[3].status, 401);
   assert.equal(live.scope, 'running-now');
   assert.equal(live.summary.displayMode, 'running-only');
   assert.equal(new Set(live.sessions.map((session) => session.id)).size, live.sessions.length);
   assert.equal(live.sessions.every((session) => session.status === 'RUNNING'), true);
   assert.equal(live.sessions.every((session) => Array.isArray(session.liveOutput)), true);
-  assert.match(results[3].body, /Live wall/);
-  assert.match(results[4].body, /renderTranscript/);
-  assert.match(results[5].body, /\.live-transcript/);
+  assert.match(results[4].body, /Live wall/);
+  assert.match(results[5].body, /renderTranscript/);
+  assert.match(results[6].body, /\.live-transcript/);
   assert.equal(live.sessions.some((session) => session.liveOutput.length > 0), true, 'live cards must expose durable output');
   const stream = await streamProof(ip);
   assert.equal(stream.changed, true);
@@ -130,14 +134,14 @@ function streamProof(ip) {
     endpoint,
     resolvedPublicAddress: ip,
     health: true,
-    unauthenticatedStatus: results[2].status,
+    unauthenticatedStatus: results[3].status,
     discoveredNonArchived: live.summary.totalNonArchived,
     runningSessions: live.sessions.length,
     uniqueRunningSessions: new Set(live.sessions.map((session) => session.id)).size,
     hiddenHistory: live.summary.hiddenNonRunningCount,
     outputSessions: live.sessions.filter((session) => session.liveOutput.length > 0).length,
     allCardsRunning: live.sessions.every((session) => session.status === 'RUNNING'),
-    assets: results.slice(3).map((result) => ({ status: result.status, bytes: result.body.length })),
+    assets: results.slice(4).map((result) => ({ status: result.status, bytes: result.body.length })),
     stream,
     readErrors: health.summary.readErrors,
     telemetryErrors: health.summary.telemetryErrorCount,

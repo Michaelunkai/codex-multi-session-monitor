@@ -104,6 +104,10 @@ test('running-only 12-session dashboard endpoint and SSE update work without Cod
       }
     });
     const port = running.runtime.port;
+    const liveness = await requestJson(port, '/api/liveness');
+    assert.equal(liveness.statusCode, 200);
+    assert.equal(liveness.body.ok, true);
+    assert.equal(liveness.body.readOnly, true);
     const initial = await requestJson(port, '/api/snapshot?scope=all');
     assert.equal(initial.statusCode, 200);
     assert.equal(initial.body.scope, 'running-now');

@@ -32,7 +32,7 @@ function health() {
       const cfg=read(path.join(root,'config','monitor.json'));
       const runtime=read(path.join(root,'data','monitor.pid.json'));
       const token=fs.readFileSync(cfg.auth.tokenFile,'utf8').trim();
-      const req=https.get({hostname:runtime.bindHost,port:runtime.port,path:'/api/health',
+      const req=https.get({hostname:runtime.bindHost,port:runtime.port,path:'/api/liveness',
         ca:fs.readFileSync(cfg.tls.certFile),headers:{Authorization:'Bearer '+token},timeout:8000}, res=>{
         let text='';res.on('data',chunk=>text+=chunk);res.on('end',()=>{try{resolve(res.statusCode===200&&JSON.parse(text).ok);}catch{resolve(false);}});
       });
