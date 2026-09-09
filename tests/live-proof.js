@@ -13,7 +13,10 @@ const options = {
   hostname: cfg.bindHost,
   port: cfg.port,
   ca: fs.readFileSync(cfg.tls.certFile),
-  headers: { Authorization: 'Bearer ' + token }
+  headers: {
+    Authorization: 'Bearer ' + token,
+    Origin: 'https://michaelunkai.github.io'
+  }
 };
 
 function get(url, auth = true) {
@@ -88,6 +91,8 @@ function streamProof() {
   const health = JSON.parse(results[0].body);
   const live = JSON.parse(results[1].body);
   assert.equal(health.ok, true);
+  assert.equal(results[0].headers['access-control-allow-origin'], 'https://michaelunkai.github.io');
+  assert.equal(results[1].headers['access-control-allow-origin'], 'https://michaelunkai.github.io');
   assert.equal(results[2].status, 401);
   assert.equal(live.scope, 'running-now');
   assert.equal(live.summary.displayMode, 'running-only');

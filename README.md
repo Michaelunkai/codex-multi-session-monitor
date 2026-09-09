@@ -2,13 +2,19 @@
 
 An F:-resident, read-only monitoring wall for the existing Windows ChatGPT Codex Desktop sessions. It is built for one Android screen that can watch many sessions concurrently. It does not control, pause, resume, or rewrite Codex.
 
+Published static shell: https://michaelunkai.github.io/codex-multi-session-monitor-pages/
+
+Private source: https://github.com/Michaelunkai/codex-multi-session-monitor  ·  Pages-only UI source: https://github.com/Michaelunkai/codex-multi-session-monitor-pages
+
+The hosted shell contains no Codex data. It connects directly to the authenticated F: monitor after the user pastes the complete private PC access URL.
+
 ## Architecture and exact versions
 
 - Adapter/server: `2.0.0`, dependency-free Node.js production code.
 - Portable Node.js: `v24.21.0` Windows x64, stored in `runtime\node` and using built-in `node:sqlite`.
 - Portable PowerShell launcher: `7.6.6`, stored in `runtime\powershell`.
 - Test-only DOM dependency: LinkeDOM `0.18.12`; its package cache and dependencies are under this root.
-- Dashboard: local HTML/CSS/JavaScript, authenticated Server-Sent Events (SSE), 500 ms polling fallback, running-only responsive live wall.
+- Dashboard: local HTML/CSS/JavaScript, authenticated Server-Sent Events (SSE), 2-second polling fallback, running-only responsive live wall.
 - Access: private-LAN HTTPS using an F:-resident self-signed RSA-2048 certificate and a random bearer token. The current address is printed by `STATUS.ps1 -ShowAccessUrl`; the current port is `8766` because `8765` is already reserved by an unrelated listener.
 
 AgentsView and Codex Monitor HUD were checked before implementation. AgentsView is useful for local history but is not an Android-first live wall for this Desktop state; HUD is a Windows overlay and uses `%LOCALAPPDATA%`. The official Codex app-server is richer, but this Desktop instance exposes its server internally through stdio. The monitor therefore observes the existing local projections read-only and does not start or attach to a second app-server.
@@ -53,7 +59,7 @@ Use the obvious wrappers from any normal Windows shell:
 & 'F:\backup\windowsapps\installed\Codex-MultiSession-Monitor\scripts\STOP.cmd'
 ```
 
-The wrappers force the portable F:-resident PowerShell runtime; this avoids Windows PowerShell 5.1 certificate-option differences. START sets TEMP/TMP and package caches under F:, validates the portable runtimes and source paths, avoids duplicate monitor instances, selects a free port, starts the supervisor, waits for authenticated health, and prints both PC and Android addresses. Restart is STOP followed by START. All controlled logs are under `logs`.
+The wrappers force the portable F:-resident PowerShell runtime; this avoids Windows PowerShell 5.1 certificate-option differences. START sets TEMP/TMP and package caches under F:, validates the portable runtimes and source paths, avoids duplicate monitor instances, selects a free port, starts the supervisor, waits for authenticated health, and never prints the bearer token. Use `STATUS.cmd -ShowAccessUrl` when you intentionally need the tokenized PC URL. Restart is STOP followed by START. All controlled logs are under `logs`.
 
 Automatic startup is registered as the Windows task `Codex-MultiSession-Monitor`, using the current interactive user at least privilege and the F:-resident supervisor. It starts after logon and restarts the monitor after health failures. STOP intentionally signals the supervisor to exit. Use `ENABLE-AUTOSTART.ps1` and `DISABLE-AUTOSTART.ps1` to manage that one task. Windows task metadata is the only intentional OS registration outside F:; no service, global PATH change, firewall rule, or certificate-store entry is installed.
 
@@ -62,21 +68,24 @@ Automatic startup is registered as the Windows task `Codex-MultiSession-Monitor`
 1. On the PC, run `F:\backup\windowsapps\installed\Codex-MultiSession-Monitor\scripts\STATUS.cmd -ShowAccessUrl` (or double-click START.cmd first).
 2. Keep the Android phone and PC on the same private Wi-Fi/LAN.
 3. Copy the complete **Android/private access URL** printed by the command. It looks like `https://192.168.1.129:8766/#token=...`; the token is intentionally in the URL fragment.
-4. Open that complete link in Chrome on Android. Accept the one-time warning for the local self-signed certificate, if shown.
-5. Bookmark the resulting page. Leave it open: cards update automatically. Scroll vertically to inspect every running session; scroll inside a card's transcript pane to read its current output.
+4. Open that complete PC link in Chrome on Android once. Accept the one-time warning for the local self-signed certificate, if shown.
+5. Open the published Pages URL above. Paste the complete PC URL into **Connect this wall**, then tap **Connect live wall**.
+6. Bookmark the connected Pages URL. Leave it open: SSE updates the wall automatically. Scroll vertically to inspect every running session; scroll inside a card's transcript pane to read its current output.
 
 Use the full URL, not the bare IP/port. Do not share it: it contains the local bearer token. If the PC changes private IP or port, obtain a new URL from STATUS. This is private-LAN access only; cellular/off-LAN access requires a separately authorized VPN and none is installed by this project.
 
 ## Security model
 
-The server binds only to a private RFC1918 interface, uses HTTPS, requires the bearer token for health, snapshots, and SSE, accepts only GET/HEAD, serves no CORS API, and uses no-store/no-referrer headers. The static shell contains no session data. Token and private-key ACLs are limited to the current user and SYSTEM. No public tunnel, unrestricted listener, SMB/RDP rule, firewall weakening, or authentication bypass was added.
+The server binds only to a private RFC1918 interface, uses HTTPS, requires the bearer token for health, snapshots, and SSE, accepts GET/HEAD plus exact-origin preflight, allows CORS only for the published Pages origin, and uses no-store/no-referrer headers. The static shell contains no session data. Token and private-key ACLs are limited to the current user and SYSTEM. No public tunnel, unrestricted listener, SMB/RDP rule, firewall weakening, or authentication bypass was added.
 
 Windows and Codex may create unavoidable metadata outside F:. This project redirects its runtimes, dependencies, caches, temporary files, configuration, state, logs, certificates, and scripts to this root wherever technically controllable. The existing Codex installation and state were preserved.
 
 ## Directory layout
 
 ```text
-app/                 Node adapter and static dashboard
+app/                 Node adapter and static dashboard source
+deploy/              Vercel-compatible static bundle
+public-site/         Pages bundle and separate Pages checkout
 runtime/node/        portable Node.js runtime
 runtime/powershell/  portable PowerShell launcher runtime
 config/              monitor config, token, and TLS files
@@ -95,6 +104,7 @@ docs/ .agents/       project notes and research evidence
 - **Certificate warning:** expected once for the local self-signed certificate. Verify the URL is the PC's private address before accepting it.
 - **No cards:** STATUS should report `RunningSessions`. A session is hidden immediately after its durable terminal event or after its 20-second rollout freshness window expires.
 - **No Android connection:** confirm both devices are on the same private LAN, use the current STATUS URL, and run `HEALTH.ps1`. No global firewall change is made automatically.
+- **Published shell cannot connect:** the Pages URL is only a static shell. First trust the PC HTTPS URL on the phone, then paste the complete tokenized PC URL into the connection panel. Cellular/off-LAN access requires a separately authorized VPN or tunnel, which this project does not install.
 - **Telemetry errors:** inspect `STATUS.ps1`, `logs\server.stderr.log`, and the current Codex source paths. A nonzero telemetry-error count can represent old/missing rollout references and does not turn stale sessions into RUNNING cards.
 - **Need to act on a task:** use official Codex Remote or the Codex Desktop app; this dashboard is read-only.
 
@@ -108,6 +118,6 @@ Do not remove `C:\Users\micha\.codex`, the WindowsApps Codex installation, or an
 
 ## Safe updates
 
-Keep all new archives, caches, temporary files, dependencies, and build output under this root. Review changes to `app` and `scripts`, run `scripts\TEST.cmd`, restart, then run `tests\live-proof.js`, `tests\recovery-proof.ps1`, `tests\android-network-proof.js` when the authorized Android transport is available, and `scripts\AUDIT.ps1`. Before installing any package, set `TEMP`, `TMP`, `NPM_CONFIG_CACHE`, `NPM_CONFIG_PREFIX`, and `XDG_CACHE_HOME` to the project directories. Never use a global install or the system Node/Python installation.
+Keep all new archives, caches, temporary files, dependencies, and build output under this root. Review changes to `app` and `scripts`, copy the three `app\public` assets to both `deploy` and `public-site`, run `scripts\TEST.cmd`, restart, then run `tests\live-proof.js`, `tests\recovery-proof.ps1`, `tests\android-network-proof.js` when the authorized Android transport is available, and `scripts\AUDIT.ps1`. Push the private source repository and the Pages-only checkout only after the tests pass. Before installing any package, set `TEMP`, `TMP`, `NPM_CONFIG_CACHE`, `NPM_CONFIG_PREFIX`, and `XDG_CACHE_HOME` to the project directories. Never use a global install or the system Node/Python installation.
 
 Validation records are kept under `logs` and the source findings under `findings.md` and `task_plan.md`. The approved visible Chrome connector was unavailable during the PC run, so phone browser pixels were not claimed as verified; the Android HTTPS/SSE network path was tested through the authorized device transport.

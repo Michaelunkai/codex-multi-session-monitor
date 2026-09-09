@@ -206,8 +206,8 @@ Write-Output ('Dashboard: ' + $protocol + '://' + $bindHost + ':' + $listenPort 
 if ($bindHost -eq '127.0.0.1') {
     Write-Output 'Android access: unavailable on localhost; run START.ps1 after joining a private LAN or use -LocalOnly only for PC diagnostics.'
 } else {
-    if (-not $QuietAccess) { Write-Output ('Android/private access URL: ' + $protocol + '://' + $bindHost + ':' + $listenPort + '/#token=' + $token) }
-    Write-Output 'Android: connect to the same private Wi-Fi and open the URL above. The certificate is self-signed; accept the one-time browser warning.'
+    Write-Output 'Android: run STATUS.cmd -ShowAccessUrl locally to obtain the private tokenized URL; the token is intentionally not printed by START.'
+    Write-Output 'The Android URL is private-LAN HTTPS. Accept the one-time self-signed certificate warning only for this PC address.'
 }
 Write-Output ('Token file: ' + (Join-Path $root 'config\access.token'))
 Write-Output ('Logs: ' + $logRoot)
