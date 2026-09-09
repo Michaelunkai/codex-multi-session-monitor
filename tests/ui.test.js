@@ -127,3 +127,56 @@ test('hosted shell accepts the private PC access URL and targets the live PC ori
   assert.equal(document.querySelectorAll('.session-card').length, 12);
   adapter.close();
 });
+
+test('one-tap access link auto-connects, stores the token, and cleans the address bar', async () => {
+  const { document, Event } = parseHTML(fs.readFileSync(path.join(root, 'app/public/index.html'), 'utf8'));
+  const adapter = createLiveAdapter(normalizeConfig({}, root), path.join(__dirname, 'fixtures/synthetic-12.json'));
+  const snapshot = adapter.snapshot();
+  snapshot.scope = 'running-now';
+  snapshot.displayMode = 'running-only';
+  snapshot.sessions = snapshot.sessions.filter((session) => session.status === 'RUNNING');
+  snapshot.summary.runningCount = snapshot.sessions.length;
+  const values = new Map();
+  const replaced = [];
+  const requests = [];
+  class FakeEventSource {
+    constructor(url) { this.url = url; this.listeners = {}; }
+    addEventListener(name, fn) { this.listeners[name] = fn; }
+    close() { this.closed = true; }
+  }
+  const window = {
+    location: {
+      href: 'https://michaelunkai.github.io/codex-multi-session-monitor-pages/#token=remote-test-token&endpoint=https%3A%2F%2F192.168.1.129%3A8766',
+      origin: 'https://michaelunkai.github.io',
+      pathname: '/codex-multi-session-monitor-pages/',
+      search: '',
+      hash: '#token=remote-test-token&endpoint=https%3A%2F%2F192.168.1.129%3A8766'
+    },
+    URL,
+    localStorage: {
+      getItem(key) { return values.get(key) || null; },
+      setItem(key, value) { values.set(key, value); },
+      removeItem(key) { values.delete(key); }
+    },
+    history: { replaceState(state, title, url) { replaced.push(url); } },
+    EventSource: FakeEventSource
+  };
+  const context = {
+    document, window, EventSource: FakeEventSource, URLSearchParams, console, Set, Date, encodeURIComponent,
+    setInterval() { return 1; }, clearInterval() {}, setTimeout() { return 1; }, clearTimeout() {},
+    navigator: { clipboard: { writeText: async () => {} } },
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, json: async () => snapshot };
+    }
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
+  document.dispatchEvent(new Event('DOMContentLoaded'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(requests[0].url, /^https:\/\/192\.168\.1\.129:8766\/api\/snapshot\?token=remote-test-token$/);
+  assert.equal(values.get('codex-live-wall-token:https://192.168.1.129:8766'), 'remote-test-token');
+  assert.equal(replaced[0], 'https://michaelunkai.github.io/codex-multi-session-monitor-pages/');
+  assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
+  assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
+  adapter.close();
+});
