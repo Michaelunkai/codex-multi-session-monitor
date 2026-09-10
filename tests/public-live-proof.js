@@ -82,7 +82,8 @@ function streamProof(ip) {
               generatedAt: snapshot.generatedAt,
               cards: snapshot.sessions.length,
               outputEntries: snapshot.sessions.reduce((sum, session) => sum + session.liveOutput.length, 0),
-              digests: snapshot.sessions.map((session) => session.outputDigest)
+              digests: snapshot.sessions.map((session) => session.outputDigest),
+              activities: snapshot.sessions.map((session) => session.activity && [session.activity.kind, session.activity.label, session.activity.ordinal])
             });
             if (seen.length >= 2) finish();
           } catch (error) {
@@ -123,11 +124,14 @@ function streamProof(ip) {
   assert.equal(new Set(live.sessions.map((session) => session.id)).size, live.sessions.length);
   assert.equal(live.sessions.every((session) => session.status === 'RUNNING'), true);
   assert.equal(live.sessions.every((session) => Array.isArray(session.liveOutput)), true);
+  assert.equal(live.sessions.every((session) => session.activity && session.activity.label && session.activity.at), true);
   assert.match(results[4].body, /Live wall/);
   assert.match(results[5].body, /renderTranscript/);
   assert.match(results[6].body, /\.live-transcript/);
   assert.equal(live.sessions.some((session) => session.liveOutput.length > 0), true, 'live cards must expose durable output');
   const stream = await streamProof(ip);
+  assert.equal(stream.changed, true, 'authenticated public SSE must deliver an automatic changed snapshot');
+  assert.equal(stream.first && stream.latest && JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities), true, 'public SSE must carry changed live activity');
   assert.equal(stream.changed, true);
   const report = {
     checkedAt: new Date().toISOString(),
@@ -143,6 +147,7 @@ function streamProof(ip) {
     allCardsRunning: live.sessions.every((session) => session.status === 'RUNNING'),
     assets: results.slice(4).map((result) => ({ status: result.status, bytes: result.body.length })),
     stream,
+    streamActivityChanged: stream.first && stream.latest ? JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities) : false,
     readErrors: health.summary.readErrors,
     telemetryErrors: health.summary.telemetryErrorCount,
     credentials: 'read from F:-resident token file and sent as an Authorization header; never printed'
