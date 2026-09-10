@@ -406,6 +406,8 @@ test('responsive dashboard source locks the wall to running cards with transcrip
   assert.match(css, /@media \(max-width: 780px\)/);
   assert.match(js, /function renderActivity/);
   assert.match(js, /function renderTranscript/);
+  assert.match(js, /function revealLatestTranscript/);
+  assert.match(js, /revealLatestTranscript\(card\)/);
   assert.match(js, /EventSource/);
   assert.match(js, /function accessTokenForCopy/);
   assert.match(js, /function fallbackCopyText/);
