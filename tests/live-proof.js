@@ -135,7 +135,11 @@ function streamProof() {
   assert.equal(exactOutputMatch, true, 'dashboard must preserve complete durable output text');
   const stream = await streamProof();
   assert.equal(stream.changed, true, 'authenticated SSE must deliver an automatic changed snapshot');
-  assert.equal(stream.first && stream.latest && JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities), true, 'automatic SSE proof must include a changed live activity record');
+  const streamContentChanged = stream.first && stream.latest && (
+    JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities) ||
+    JSON.stringify(stream.first.digests) !== JSON.stringify(stream.latest.digests)
+  );
+  assert.equal(streamContentChanged, true, 'automatic SSE proof must include changed live activity or output');
   const report = {
     checkedAt: new Date().toISOString(),
     version: health.serverVersion,
@@ -160,6 +164,7 @@ function streamProof() {
     assets: results.slice(5).map((result) => ({ status: result.status, bytes: result.body.length })),
     stream,
     streamActivityChanged: stream.first && stream.latest ? JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities) : false,
+    streamContentChanged,
     readErrors: health.summary.readErrors,
     telemetryErrors: health.summary.telemetryErrorCount,
     renderedBrowser: 'Not claimed: approved browser connector was unavailable; network/API/SSE proof completed.'

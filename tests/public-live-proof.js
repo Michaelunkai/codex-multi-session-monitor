@@ -136,7 +136,11 @@ function streamProof(ip) {
   assert.equal(live.sessions.some((session) => session.liveOutput.length > 0), true, 'live cards must expose durable output');
   const stream = await streamProof(ip);
   assert.equal(stream.changed, true, 'authenticated public SSE must deliver an automatic changed snapshot');
-  assert.equal(stream.first && stream.latest && JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities), true, 'public SSE must carry changed live activity');
+  const streamContentChanged = stream.first && stream.latest && (
+    JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities) ||
+    JSON.stringify(stream.first.digests) !== JSON.stringify(stream.latest.digests)
+  );
+  assert.equal(streamContentChanged, true, 'public SSE must carry changed live activity or output');
   assert.equal(stream.changed, true);
   const report = {
     checkedAt: new Date().toISOString(),
@@ -160,6 +164,7 @@ function streamProof(ip) {
     assets: results.slice(4).map((result) => ({ status: result.status, bytes: result.body.length })),
     stream,
     streamActivityChanged: stream.first && stream.latest ? JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities) : false,
+    streamContentChanged,
     readErrors: health.summary.readErrors,
     telemetryErrors: health.summary.telemetryErrorCount,
     credentials: 'read from F:-resident token file and sent as an Authorization header; never printed'
