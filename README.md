@@ -8,9 +8,11 @@ Private source: https://github.com/Michaelunkai/codex-multi-session-monitor  · 
 
 The hosted shell contains no Codex data or bearer token. It has the private bridge endpoint and a loopback probe range built in. When opened on the monitor PC, it probes `http://127.0.0.1` without a token and connects automatically; on another machine that probe is rejected or unreachable and the page waits for the private one-tap access link. A one-tap link carries the access fragment once; the page connects automatically, stores the token in that browser's storage, and removes the fragment from the visible address bar.
 
+If the local monitor is starting, restarting, or chooses another free port in its reserved range, the hosted wall keeps probing and reconnects without user action. Its loopback CORS response also permits Chrome's Private Network Access preflight only for the published Pages origin; bearer authentication remains mandatory for every remote request.
+
 ## Architecture and exact versions
 
-- Adapter/server: `2.3.0`, dependency-free Node.js production code.
+- Adapter/server: `2.3.1`, dependency-free Node.js production code.
 - Portable Node.js: `v24.21.0` Windows x64, stored in `runtime\node` and using built-in `node:sqlite`.
 - Portable PowerShell launcher: `7.6.6`, stored in `runtime\powershell`.
 - Test-only DOM dependency: LinkeDOM `0.18.12`; its package cache and dependencies are under this root.

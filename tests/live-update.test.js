@@ -121,10 +121,12 @@ test('running-only 12-session dashboard endpoint and SSE update work without Cod
     const preflight = await requestRaw(port, 'OPTIONS', '/api/snapshot', {
       Origin: 'https://deploy.example',
       'Access-Control-Request-Method': 'GET',
-      'Access-Control-Request-Headers': 'authorization'
+      'Access-Control-Request-Headers': 'authorization',
+      'Access-Control-Request-Private-Network': 'true'
     });
     assert.equal(preflight.statusCode, 204);
     assert.equal(preflight.headers['access-control-allow-origin'], 'https://deploy.example');
+    assert.equal(preflight.headers['access-control-allow-private-network'], 'true');
     const crossOrigin = await requestRaw(port, 'GET', '/api/snapshot', { Origin: 'https://deploy.example' });
     assert.equal(crossOrigin.statusCode, 200);
     assert.equal(crossOrigin.headers['access-control-allow-origin'], 'https://deploy.example');

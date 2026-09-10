@@ -9,7 +9,7 @@ const net = require('node:net');
 const { URL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 
-const SERVER_VERSION = '2.3.0';
+const SERVER_VERSION = '2.3.1';
 const DEFAULT_PORT = 8765;
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_LIVE_WINDOW_SECONDS = 20;
@@ -1984,6 +1984,12 @@ function setCorsHeaders(response, request, config) {
   response.setHeader('Access-Control-Allow-Origin', origin);
   response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Cache-Control');
   response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  // The deployed HTTPS wall intentionally reads its own loopback monitor.
+  // Chrome's Private Network Access preflight requires this explicit opt-in;
+  // origin allow-listing and bearer auth still apply to every remote request.
+  if (String(request.headers['access-control-request-private-network'] || '').toLowerCase() === 'true') {
+    response.setHeader('Access-Control-Allow-Private-Network', 'true');
+  }
   response.setHeader('Vary', 'Origin');
   return true;
 }

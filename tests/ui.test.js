@@ -228,6 +228,53 @@ test('published wall auto-connects to the local PC before asking remote devices 
   adapter.close();
 });
 
+test('published wall keeps retrying the local PC after a transient monitor restart', async () => {
+  const { document, Event } = parseHTML(fs.readFileSync(path.join(root, 'app/public/index.html'), 'utf8'));
+  const adapter = createLiveAdapter(normalizeConfig({}, root), path.join(__dirname, 'fixtures/synthetic-12.json'));
+  const snapshot = adapter.snapshot();
+  snapshot.scope = 'running-now';
+  snapshot.displayMode = 'running-only';
+  snapshot.sessions = snapshot.sessions.filter((session) => session.status === 'RUNNING');
+  snapshot.summary.runningCount = snapshot.sessions.length;
+  const delayed = [];
+  const streams = [];
+  let calls = 0;
+  class FakeEventSource {
+    constructor(url) { this.url = url; this.listeners = {}; streams.push(this); }
+    addEventListener(name, fn) { this.listeners[name] = fn; }
+    close() { this.closed = true; }
+  }
+  const window = {
+    location: { href: 'https://michaelunkai.github.io/codex-multi-session-monitor-pages/', origin: 'https://michaelunkai.github.io', pathname: '/codex-multi-session-monitor-pages/', search: '', hash: '' },
+    URL,
+    history: { replaceState() {} },
+    EventSource: FakeEventSource
+  };
+  const context = {
+    document, window, EventSource: FakeEventSource, URLSearchParams, console, Set, Date, URL, encodeURIComponent,
+    setInterval() { return 1; }, clearInterval() {}, setTimeout(fn) { delayed.push(fn); return delayed.length; }, clearTimeout() {},
+    navigator: { clipboard: { writeText: async () => {} } },
+    fetch: async () => {
+      calls += 1;
+      if (calls <= 36) throw new Error('monitor restarting');
+      return { ok: true, json: async () => snapshot };
+    }
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
+  document.dispatchEvent(new Event('DOMContentLoaded'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(document.querySelector('#connectionBadge').textContent, /Looking for this PC/);
+  assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), false);
+  const retry = delayed.pop();
+  retry();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
+  assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
+  assert.equal(streams.length, 1);
+  assert.match(streams[0].url, /^http:\/\/127\.0\.0\.1:8766\/events$/);
+  adapter.close();
+});
+
 test('one-tap access link auto-connects, stores the token, and cleans the address bar', async () => {
   const { document, Event } = parseHTML(fs.readFileSync(path.join(root, 'app/public/index.html'), 'utf8'));
   document.querySelector('meta[name="codex-monitor-local-endpoint"]').setAttribute('content', '');
