@@ -15,6 +15,8 @@ test('hosted bundle is the same running-only UI and contains no local secrets', 
   assert.match(deployed[0], /id="cards"/);
   assert.match(deployed[1], /failClosedSnapshot/);
   assert.match(deployed[1], /endpoint/);
+  assert.match(deployed[1], /localProbe/);
+  assert.match(deployed[0], /codex-monitor-local-endpoint/);
   assert.match(deployed[2], /minmax\(480px, 1fr\)/);
   for (const asset of deployed) {
     assert.doesNotMatch(asset, /access\.token|server-key\.pem|state_5\.sqlite|thread_history_1\.sqlite|session_index\.jsonl/i);

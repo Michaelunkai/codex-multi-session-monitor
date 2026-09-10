@@ -19,9 +19,10 @@ const options = {
   }
 };
 
-function get(url, auth = true) {
+function get(url, auth = true, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
-    const request = https.get({ ...options, path: url, headers: auth ? options.headers : {} }, (response) => {
+    const headers = auth ? { ...options.headers, ...extraHeaders } : extraHeaders;
+    const request = https.get({ ...options, path: url, headers }, (response) => {
       let body = '';
       response.setEncoding('utf8');
       response.on('data', (chunk) => { body += chunk; });
@@ -85,7 +86,7 @@ function streamProof() {
     get('/api/liveness'),
     get('/api/snapshot?scope=all'),
     get('/api/health', false),
-    get('/api/snapshot', false),
+    get('/api/snapshot', false, { Origin: 'https://michaelunkai.github.io' }),
     get('/'),
     get('/app.js'),
     get('/styles.css')
@@ -101,6 +102,7 @@ function streamProof() {
   assert.equal(results[2].headers['access-control-allow-origin'], 'https://michaelunkai.github.io');
   assert.equal(results[3].status, 200);
   assert.equal(results[4].status, 200);
+  assert.equal(results[4].headers['access-control-allow-origin'], 'https://michaelunkai.github.io');
   assert.equal(localLive.scope, 'running-now');
   assert.equal(localLive.displayMode, 'running-only');
   assert.equal(localLive.sessions.every((session) => session.status === 'RUNNING'), true);
