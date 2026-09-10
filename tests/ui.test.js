@@ -172,9 +172,9 @@ test('same-origin PC wall connects without a bearer link while remote shell stay
   document.dispatchEvent(new Event('DOMContentLoaded'));
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
-  assert.equal(requests[0].url, 'https://192.168.1.129:8766/api/snapshot');
+  assert.equal(requests[0].url, 'http://127.0.0.1:8766/api/snapshot');
   assert.equal(requests[0].options.headers, undefined);
-  assert.equal(streams[0].url, 'https://192.168.1.129:8766/events');
+  assert.equal(streams[0].url, 'http://127.0.0.1:8766/events');
   assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
   adapter.close();
 });
@@ -221,9 +221,9 @@ test('published wall auto-connects to the local PC before asking remote devices 
   document.dispatchEvent(new Event('DOMContentLoaded'));
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
-  assert.equal(requests[0].url, 'https://192.168.1.129:8766/api/snapshot');
+  assert.equal(requests[0].url, 'http://127.0.0.1:8766/api/snapshot');
   assert.equal(requests[0].options.headers, undefined);
-  assert.equal(streams[0].url, 'https://192.168.1.129:8766/events');
+  assert.equal(streams[0].url, 'http://127.0.0.1:8766/events');
   assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
   adapter.close();
 });

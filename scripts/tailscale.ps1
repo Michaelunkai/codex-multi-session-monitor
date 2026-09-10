@@ -143,16 +143,18 @@ function Get-PublicUrl {
 function Ensure-Funnel {
     if ($MonitorPort -lt 1024 -or $MonitorPort -gt 65500) { throw 'MonitorPort must be between 1024 and 65500.' }
     $monitorHost = '127.0.0.1'
+    $monitorProtocol = 'https+insecure'
     if (Test-Path -LiteralPath $monitorPidPath) {
         try {
             $runtime = Get-Content -LiteralPath $monitorPidPath -Raw | ConvertFrom-Json
             if ($runtime.bindHost) { $monitorHost = [string]$runtime.bindHost }
+            if ($runtime.protocol -eq 'http') { $monitorProtocol = 'http' }
         } catch { }
     }
     if ($monitorHost -match ':') {
-        $target = 'https+insecure://[' + $monitorHost + ']:' + $MonitorPort
+        $target = $monitorProtocol + '://[' + $monitorHost + ']:' + $MonitorPort
     } else {
-        $target = 'https+insecure://' + $monitorHost + ':' + $MonitorPort
+        $target = $monitorProtocol + '://' + $monitorHost + ':' + $MonitorPort
     }
     $configured = Invoke-Tailscale -Arguments @('funnel', '--bg', $target)
     if ($configured.ExitCode -ne 0) {

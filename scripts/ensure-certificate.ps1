@@ -13,7 +13,8 @@ $keyPath = Join-Path $tlsRoot 'server-key.pem'
 $certPath = Join-Path $tlsRoot 'server-cert.pem'
 $bindHostPath = Join-Path $tlsRoot 'server-cert.bind-host'
 New-Item -ItemType Directory -Path $tlsRoot -Force | Out-Null
- $existingBindHost = if (Test-Path -LiteralPath $bindHostPath) { (Get-Content -LiteralPath $bindHostPath -Raw).Trim() } else { '' }
+$existingBindHost = if (Test-Path -LiteralPath $bindHostPath) { (Get-Content -LiteralPath $bindHostPath -Raw).Trim() } else { '' }
+
 if ((Test-Path -LiteralPath $keyPath) -and (Test-Path -LiteralPath $certPath) -and $existingBindHost -eq $BindHost -and -not $Force) {
     Write-Output 'TLS certificate already exists.'
     exit 0

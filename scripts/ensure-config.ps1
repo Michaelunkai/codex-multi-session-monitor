@@ -42,7 +42,7 @@ $config.paths.historyDb = $historyDb
 $config.paths.sessionIndex = $sessionIndex
 $config.auth.required = $true
 $config.auth.tokenFile = Join-Path $configRoot 'access.token'
-$config.tls.enabled = $true
+$config.tls.enabled = ($BindHost -ne '127.0.0.1')
 $config.tls.keyFile = Join-Path $configRoot 'tls\server-key.pem'
 $config.tls.certFile = Join-Path $configRoot 'tls\server-cert.pem'
 

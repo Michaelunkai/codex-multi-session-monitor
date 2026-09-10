@@ -48,19 +48,38 @@ function get(ip, requestPath, authenticated = true) {
   });
 }
 
+function summarizeFrame(snapshot) {
+  return {
+    generatedAt: snapshot.generatedAt,
+    cards: snapshot.sessions.length,
+    outputEntries: snapshot.sessions.reduce((sum, session) => sum + session.liveOutput.length, 0),
+    sessions: snapshot.sessions.map((session) => ({
+      id: session.id,
+      outputDigest: session.outputDigest,
+      outputChars: session.outputChars,
+      activity: session.activity && [session.activity.kind, session.activity.label, session.activity.ordinal]
+    })).sort((left, right) => left.id.localeCompare(right.id))
+  };
+}
+
+function framesDiffer(left, right) {
+  return Boolean(left && right && JSON.stringify(left.sessions) !== JSON.stringify(right.sessions));
+}
+
 function streamProof(ip) {
   return new Promise((resolve, reject) => {
     const seen = [];
     let pending = '';
     let request;
     let finished = false;
+    let meaningfulChange = false;
     const finish = (error) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       if (request) request.destroy();
       if (error) reject(error);
-      else resolve({ frames: seen.length, changed: seen.length > 1, first: seen[0] || null, latest: seen.at(-1) || null });
+      else resolve({ frames: seen.length, changed: seen.length > 1, meaningfulChange, first: seen[0] || null, latest: seen.at(-1) || null });
     };
     const timer = setTimeout(() => finish(), 22000);
     request = https.get(requestOptions(ip, '/events'), (response) => {
@@ -78,14 +97,10 @@ function streamProof(ip) {
             assert.equal(snapshot.scope, 'running-now');
             assert.equal(snapshot.summary.displayMode, 'running-only');
             assert.equal(snapshot.sessions.every((session) => session.status === 'RUNNING'), true);
-            seen.push({
-              generatedAt: snapshot.generatedAt,
-              cards: snapshot.sessions.length,
-              outputEntries: snapshot.sessions.reduce((sum, session) => sum + session.liveOutput.length, 0),
-              digests: snapshot.sessions.map((session) => session.outputDigest),
-              activities: snapshot.sessions.map((session) => session.activity && [session.activity.kind, session.activity.label, session.activity.ordinal])
-            });
-            if (seen.length >= 2) finish();
+            const frame = summarizeFrame(snapshot);
+            if (framesDiffer(seen.at(-1), frame)) meaningfulChange = true;
+            seen.push(frame);
+            if (meaningfulChange) finish();
           } catch (error) {
             finish(error);
           }
@@ -136,11 +151,8 @@ function streamProof(ip) {
   assert.equal(live.sessions.some((session) => session.liveOutput.length > 0), true, 'live cards must expose durable output');
   const stream = await streamProof(ip);
   assert.equal(stream.changed, true, 'authenticated public SSE must deliver an automatic changed snapshot');
-  const streamContentChanged = stream.first && stream.latest && (
-    JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities) ||
-    JSON.stringify(stream.first.digests) !== JSON.stringify(stream.latest.digests)
-  );
-  assert.equal(streamContentChanged, true, 'public SSE must carry changed live activity or output');
+  const streamContentChanged = stream.meaningfulChange;
+  assert.equal(streamContentChanged, true, 'public SSE must carry a changed per-session activity or output payload');
   assert.equal(stream.changed, true);
   const report = {
     checkedAt: new Date().toISOString(),
@@ -163,7 +175,7 @@ function streamProof(ip) {
     },
     assets: results.slice(4).map((result) => ({ status: result.status, bytes: result.body.length })),
     stream,
-    streamActivityChanged: stream.first && stream.latest ? JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities) : false,
+    streamActivityChanged: stream.meaningfulChange,
     streamContentChanged,
     readErrors: health.summary.readErrors,
     telemetryErrors: health.summary.telemetryErrorCount,

@@ -9,7 +9,7 @@ const net = require('node:net');
 const { URL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 
-const SERVER_VERSION = '2.2.0';
+const SERVER_VERSION = '2.3.0';
 const DEFAULT_PORT = 8765;
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_LIVE_WINDOW_SECONDS = 20;
@@ -1892,6 +1892,38 @@ function publicSnapshot(internal, scope) {
   };
 }
 
+function compactPublicSnapshot(internal, scope) {
+  const full = publicSnapshot(internal, scope);
+  const summary = full.summary && typeof full.summary === 'object'
+    ? {
+      ...full.summary,
+      readErrors: Array.isArray(full.summary.readErrors)
+        ? full.summary.readErrors.map((error) => truncate(String(error), 320))
+        : []
+    }
+    : full.summary;
+  return {
+    ...full,
+    compact: true,
+    summary,
+    sessions: full.sessions.map((session) => {
+      const compact = { ...session };
+      delete compact.liveOutput;
+      delete compact.sessionPath;
+      compact.liveOutputCount = Array.isArray(session.liveOutput) ? session.liveOutput.length : 0;
+      if (compact.latestItem && typeof compact.latestItem === 'object') {
+        compact.latestItem = { ...compact.latestItem };
+        delete compact.latestItem.text;
+      }
+      if (compact.activity && typeof compact.activity === 'object') {
+        compact.activity = { ...compact.activity };
+        compact.activity.detail = truncate(compact.activity.detail, 512);
+      }
+      return compact;
+    })
+  };
+}
+
 function normalizeRemoteAddress(value) {
   const address = nonEmpty(value);
   if (address === '::1') return '127.0.0.1';
@@ -2023,8 +2055,9 @@ function startServer(options = {}) {
     return lastInternal;
   }
 
-  function getSnapshot(scope = 'relevant') {
-    return publicSnapshot(getInternal(), scope);
+  function getSnapshot(scope = 'relevant', compact = false) {
+    const internal = getInternal();
+    return compact ? compactPublicSnapshot(internal, scope) : publicSnapshot(internal, scope);
   }
 
   function emitSnapshot(force = false) {
@@ -2035,7 +2068,10 @@ function startServer(options = {}) {
     for (const subscriber of subscribers) {
       try {
         subscriber.response.write('event: snapshot\n');
-        subscriber.response.write('data: ' + JSON.stringify(publicSnapshot(internal, subscriber.scope)) + '\n\n');
+        const snapshot = subscriber.compact
+          ? compactPublicSnapshot(internal, subscriber.scope)
+          : publicSnapshot(internal, subscriber.scope);
+        subscriber.response.write('data: ' + JSON.stringify(snapshot) + '\n\n');
       } catch {
         subscribers.delete(subscriber);
       }
@@ -2121,7 +2157,10 @@ function startServer(options = {}) {
         return;
       }
       if (url.pathname === '/api/snapshot') {
-        jsonResponse(response, 200, getSnapshot(url.searchParams.get('scope') === 'all' ? 'all' : 'relevant'));
+        jsonResponse(response, 200, getSnapshot(
+          url.searchParams.get('scope') === 'all' ? 'all' : 'relevant',
+          url.searchParams.get('compact') === '1'
+        ));
         return;
       }
       response.writeHead(200, {
@@ -2133,8 +2172,9 @@ function startServer(options = {}) {
       response.write('retry: 3000\n');
       response.write('event: snapshot\n');
       const scope = url.searchParams.get('scope') === 'all' ? 'all' : 'relevant';
-      response.write('data: ' + JSON.stringify(getSnapshot(scope)) + '\n\n');
-      const subscriber = { response, scope };
+      const compact = url.searchParams.get('compact') === '1';
+      response.write('data: ' + JSON.stringify(getSnapshot(scope, compact)) + '\n\n');
+      const subscriber = { response, scope, compact };
       subscribers.add(subscriber);
       request.on('close', () => subscribers.delete(subscriber));
       return;

@@ -144,7 +144,8 @@ function Ensure-PrivateBridge {
     }
 }
 
-$bindHost = if ($LocalOnly) { '127.0.0.1' } else { Get-PrivateBindAddress }
+$bindHost = '127.0.0.1'
+if (-not $LocalOnly) { Write-StartLog 'Defaulting the monitor to loopback; remote devices use the authenticated HTTPS Funnel.' }
 if (-not (Test-Path -LiteralPath $node)) { throw ('Portable Node runtime missing: ' + $node) }
 if (-not (Test-Path -LiteralPath $serverScript)) { throw ('Monitor server missing: ' + $serverScript) }
 if (-not $bindHost) {
@@ -187,8 +188,11 @@ if ($listenPort -ne $Port) {
     Write-StartLog ('Requested port ' + $Port + ' is unavailable; selected free port ' + $listenPort + '.')
 }
 & (Join-Path $PSScriptRoot 'ensure-config.ps1') -Root $root -BindHost $bindHost -Port $listenPort | Out-Null
-& (Join-Path $PSScriptRoot 'ensure-certificate.ps1') -Root $root -BindHost $bindHost | Out-Null
 $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+if ($config.tls.enabled) {
+    & (Join-Path $PSScriptRoot 'ensure-certificate.ps1') -Root $root -BindHost $bindHost | Out-Null
+    $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+}
 $protocol = if ($config.tls.enabled) { 'https' } else { 'http' }
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($stdoutPath, '', $utf8NoBom)
@@ -219,7 +223,7 @@ Write-Output 'Codex Multi-Session Monitor is ready.'
 Write-Output ('Dashboard: ' + $protocol + '://' + $bindHost + ':' + $listenPort + '/')
 Write-Output 'Local PC: open the Dashboard above; it connects automatically without a token.'
 if ($bindHost -eq '127.0.0.1') {
-    Write-Output 'Android access: unavailable on localhost; run START.ps1 after joining a private LAN or use -LocalOnly only for PC diagnostics.'
+    Write-Output 'Android: use the deployed one-tap access link; the local monitor stays loopback-only and the bridge remains authenticated HTTPS.'
 } else {
     Write-Output 'Android: the deployed access link uses the private bridge when authorization is complete; the token is intentionally not printed by START.'
     Write-Output 'If Tailscale authorization is pending, open the authorization URL shown above once; the supervisor will finish the bridge automatically.'

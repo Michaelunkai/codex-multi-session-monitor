@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const http = require('node:http');
 const https = require('node:https');
 const { spawn } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
@@ -32,8 +33,11 @@ function health() {
       const cfg=read(path.join(root,'config','monitor.json'));
       const runtime=read(path.join(root,'data','monitor.pid.json'));
       const token=fs.readFileSync(cfg.auth.tokenFile,'utf8').trim();
-      const req=https.get({hostname:runtime.bindHost,port:runtime.port,path:'/api/liveness',
-        ca:fs.readFileSync(cfg.tls.certFile),headers:{Authorization:'Bearer '+token},timeout:8000}, res=>{
+      const transport=cfg.tls.enabled?https:http;
+      const requestOptions={hostname:runtime.bindHost,port:runtime.port,path:'/api/liveness',
+        headers:{Authorization:'Bearer '+token},timeout:8000};
+      if(cfg.tls.enabled)requestOptions.ca=fs.readFileSync(cfg.tls.certFile);
+      const req=transport.get(requestOptions, res=>{
         let text='';res.on('data',chunk=>text+=chunk);res.on('end',()=>{try{resolve(res.statusCode===200&&JSON.parse(text).ok);}catch{resolve(false);}});
       });
       req.on('timeout',()=>{req.destroy();resolve(false);});req.on('error',()=>resolve(false));

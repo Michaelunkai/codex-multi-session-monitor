@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const http = require('node:http');
 const https = require('node:https');
 const assert = require('node:assert/strict');
 const { parseLiveRollout } = require('../app/server.js');
@@ -9,20 +10,21 @@ const { parseLiveRollout } = require('../app/server.js');
 const root = path.resolve(__dirname, '..');
 const cfg = JSON.parse(fs.readFileSync(path.join(root, 'config', 'monitor.json'), 'utf8'));
 const token = fs.readFileSync(cfg.auth.tokenFile, 'utf8').trim();
+const transport = cfg.tls && cfg.tls.enabled ? https : http;
 const options = {
   hostname: cfg.bindHost,
   port: cfg.port,
-  ca: fs.readFileSync(cfg.tls.certFile),
   headers: {
     Authorization: 'Bearer ' + token,
     Origin: 'https://michaelunkai.github.io'
   }
 };
+if (cfg.tls && cfg.tls.enabled) options.ca = fs.readFileSync(cfg.tls.certFile);
 
 function get(url, auth = true, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const headers = auth ? { ...options.headers, ...extraHeaders } : extraHeaders;
-    const request = https.get({ ...options, path: url, headers }, (response) => {
+    const request = transport.get({ ...options, path: url, headers }, (response) => {
       let body = '';
       response.setEncoding('utf8');
       response.on('data', (chunk) => { body += chunk; });
@@ -33,17 +35,35 @@ function get(url, auth = true, extraHeaders = {}) {
   });
 }
 
+function summarizeFrame(snapshot) {
+  return {
+    generatedAt: snapshot.generatedAt,
+    cards: snapshot.sessions.length,
+    sessions: snapshot.sessions.map((session) => ({
+      id: session.id,
+      outputDigest: session.outputDigest,
+      outputChars: session.outputChars,
+      activity: session.activity && [session.activity.kind, session.activity.label, session.activity.detail, session.activity.ordinal]
+    })).sort((left, right) => left.id.localeCompare(right.id))
+  };
+}
+
+function framesDiffer(left, right) {
+  return Boolean(left && right && JSON.stringify(left.sessions) !== JSON.stringify(right.sessions));
+}
+
 function streamProof() {
   return new Promise((resolve, reject) => {
     const seen = [];
     let pending = '';
     let request;
+    let meaningfulChange = false;
     const finish = () => {
       if (request) request.destroy();
-      resolve({ frames: seen.length, changed: seen.length > 1, first: seen[0] || null, latest: seen.at(-1) || null });
+      resolve({ frames: seen.length, changed: seen.length > 1, meaningfulChange, first: seen[0] || null, latest: seen.at(-1) || null });
     };
     const timer = setTimeout(finish, 22000);
-    request = https.get({ ...options, path: '/events' }, (response) => {
+    request = transport.get({ ...options, path: '/events' }, (response) => {
       response.setEncoding('utf8');
       response.on('data', (chunk) => {
         pending += chunk;
@@ -57,13 +77,10 @@ function streamProof() {
             const snapshot = JSON.parse(line.slice(6));
             assert.equal(snapshot.scope, 'running-now');
             assert.equal(snapshot.sessions.every((session) => session.status === 'RUNNING'), true);
-            seen.push({
-              generatedAt: snapshot.generatedAt,
-              cards: snapshot.sessions.length,
-              digests: snapshot.sessions.map((session) => session.outputDigest),
-              activities: snapshot.sessions.map((session) => session.activity && [session.activity.kind, session.activity.label, session.activity.ordinal])
-            });
-            if (seen.length >= 2) {
+            const frame = summarizeFrame(snapshot);
+            if (framesDiffer(seen.at(-1), frame)) meaningfulChange = true;
+            seen.push(frame);
+            if (meaningfulChange) {
               clearTimeout(timer);
               finish();
               return;
@@ -135,16 +152,13 @@ function streamProof() {
   assert.equal(exactOutputMatch, true, 'dashboard must preserve complete durable output text');
   const stream = await streamProof();
   assert.equal(stream.changed, true, 'authenticated SSE must deliver an automatic changed snapshot');
-  const streamContentChanged = stream.first && stream.latest && (
-    JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities) ||
-    JSON.stringify(stream.first.digests) !== JSON.stringify(stream.latest.digests)
-  );
-  assert.equal(streamContentChanged, true, 'automatic SSE proof must include changed live activity or output');
+  const streamContentChanged = stream.meaningfulChange;
+  assert.equal(streamContentChanged, true, 'automatic SSE proof must include a changed per-session activity or output payload');
   const report = {
     checkedAt: new Date().toISOString(),
     version: health.serverVersion,
-    address: 'https://' + cfg.bindHost + ':' + cfg.port,
-    tls: 'Certificate pinned to generated project certificate; hostname verified',
+    address: (cfg.tls && cfg.tls.enabled ? 'https://' : 'http://') + cfg.bindHost + ':' + cfg.port,
+    tls: cfg.tls && cfg.tls.enabled ? 'Certificate pinned to generated project certificate; hostname verified' : 'Loopback HTTP only; remote access remains HTTPS through the authenticated Funnel',
     health: true,
     localUnauthenticated: { healthStatus: results[3].status, snapshotStatus: results[4].status, runningSessions: localLive.sessions.length },
     discoveredNonArchived: live.summary.totalNonArchived,
@@ -163,7 +177,7 @@ function streamProof() {
     exactDurableOutputMatch: exactOutputMatch,
     assets: results.slice(5).map((result) => ({ status: result.status, bytes: result.body.length })),
     stream,
-    streamActivityChanged: stream.first && stream.latest ? JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities) : false,
+    streamActivityChanged: stream.meaningfulChange,
     streamContentChanged,
     readErrors: health.summary.readErrors,
     telemetryErrors: health.summary.telemetryErrorCount,

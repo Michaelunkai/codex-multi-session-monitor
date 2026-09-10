@@ -15,7 +15,8 @@ for($i=0;$i -lt 45;$i++){
   if($after.pid -and $after.pid -ne $before.pid){
    $cfg=Get-Content (Join-Path $root 'config\monitor.json') -Raw | ConvertFrom-Json
    $token=(Get-Content $cfg.auth.tokenFile -Raw).Trim()
-   $h=Invoke-RestMethod ('https://'+$after.bindHost+':'+$after.port+'/api/health') -Headers @{Authorization='Bearer '+$token} -SkipCertificateCheck -TimeoutSec 3
+   $protocol=if($cfg.tls.enabled){'https'}else{'http'}
+   $h=Invoke-RestMethod ($protocol+'://'+$after.bindHost+':'+$after.port+'/api/health') -Headers @{Authorization='Bearer '+$token} -SkipCertificateCheck -TimeoutSec 3
    if($h.ok){$recovered=$true;break}
   }
  }catch{}
