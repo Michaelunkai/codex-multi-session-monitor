@@ -407,4 +407,44 @@ test('responsive dashboard source locks the wall to running cards with transcrip
   assert.match(js, /function renderActivity/);
   assert.match(js, /function renderTranscript/);
   assert.match(js, /EventSource/);
+  assert.match(js, /function accessTokenForCopy/);
+  assert.match(js, /function fallbackCopyText/);
+});
+
+test('locally connected PC can request the private access token for copy-link generation', async () => {
+  const testRoot = path.join(projectRoot, 'temp', 'access-link-test');
+  let running;
+  try {
+    fs.rmSync(testRoot, { recursive: true, force: true });
+    fs.mkdirSync(testRoot, { recursive: true });
+    running = await startServer({
+      root: testRoot,
+      configPath: path.join(testRoot, 'config.json'),
+      syntheticFile: path.join(testRoot, 'fixture.json'),
+      token: 'a'.repeat(64),
+      config: {
+        bindHost: '127.0.0.1',
+        port: 0,
+        auth: { required: true },
+        corsOrigins: ['https://michaelunkai.github.io'],
+        tls: { enabled: false }
+      }
+    });
+    const preflight = await requestRaw(running.runtime.port, 'OPTIONS', '/api/access-link', {
+      Origin: 'https://michaelunkai.github.io',
+      'Access-Control-Request-Method': 'GET',
+      'Access-Control-Request-Private-Network': 'true'
+    });
+    assert.equal(preflight.statusCode, 204);
+    assert.equal(preflight.headers['access-control-allow-private-network'], 'true');
+    const response = await requestRaw(running.runtime.port, 'GET', '/api/access-link', {
+      Origin: 'https://michaelunkai.github.io'
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers['access-control-allow-origin'], 'https://michaelunkai.github.io');
+    assert.deepEqual(JSON.parse(response.body), { token: 'a'.repeat(64) });
+  } finally {
+    if (running) running.close();
+    fs.rmSync(testRoot, { recursive: true, force: true });
+  }
 });

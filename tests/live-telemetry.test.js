@@ -275,3 +275,23 @@ test('does not turn an unchanged repeated IPC snapshot into fake fresh activity'
   assert.equal(stabilized.latestActivity.at, first.latestActivity.at);
   assert.equal(stabilized.entries[0].text, 'unchanged live text');
 });
+
+test('does not classify a pending IPC turn as a currently running session', () => {
+  const pending = {
+    turnHistory: {
+      history: {
+        entitiesByKey: {
+          'turn:turn-pending': {
+            turnId: 'turn-pending',
+            turnStartedAtMs: 1_800_000_000_000,
+            status: 'pending',
+            items: [{ type: 'agentMessage', id: 'message-pending', text: 'queued text' }]
+          }
+        }
+      }
+    }
+  };
+  const telemetry = extractIpcTelemetry(pending, { receivedAtMs: 1_800_000_010_000, revision: 1 });
+  assert.equal(telemetry.active, false);
+  assert.equal(telemetry.entries.length, 0);
+});

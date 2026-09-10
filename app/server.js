@@ -9,7 +9,7 @@ const net = require('node:net');
 const { URL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 
-const SERVER_VERSION = '2.5.4';
+const SERVER_VERSION = '2.5.7';
 const DEFAULT_PORT = 8765;
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_LIVE_WINDOW_SECONDS = 20;
@@ -905,7 +905,9 @@ function applyIpcPatches(root, patches) {
 
 function ipcActiveTurn(entity) {
   const status = normalizeStatus(entity && entity.status);
-  return status === 'inprogress' || status === 'pending' || status === 'running' || status === 'active';
+  // A pending turn has not started producing live Desktop output yet. Keep it
+  // out of the running-only wall; only the active execution states qualify.
+  return status === 'inprogress' || status === 'running' || status === 'active';
 }
 
 function ipcTurnIdFromKey(key, entity) {
@@ -2340,7 +2342,7 @@ function startServer(options = {}) {
     }
     const corsAllowed = setCorsHeaders(response, request, config);
     if (request.method === 'OPTIONS') {
-      if (!corsAllowed || !['/api/health', '/api/liveness', '/api/snapshot', '/events'].includes(url.pathname)) {
+      if (!corsAllowed || !['/api/health', '/api/liveness', '/api/snapshot', '/api/access-link', '/events'].includes(url.pathname)) {
         response.writeHead(403, { 'Cache-Control': 'no-store' });
         response.end();
         return;
@@ -2362,9 +2364,20 @@ function startServer(options = {}) {
       response.end();
       return;
     }
-    if (url.pathname === '/api/health' || url.pathname === '/api/liveness' || url.pathname === '/api/snapshot' || url.pathname === '/events') {
+    if (url.pathname === '/api/health' || url.pathname === '/api/liveness' || url.pathname === '/api/snapshot' || url.pathname === '/api/access-link' || url.pathname === '/events') {
       if (!authMatches(request, url, token, config.auth.required, config)) {
         jsonResponse(response, 401, { error: 'Authentication required.' });
+        return;
+      }
+      if (url.pathname === '/api/access-link') {
+        // This endpoint exists only to make the PC's Copy access link button
+        // useful after token-free local auto-connect. Never return the bearer
+        // token to a network client, even if it already supplied one.
+        if (!isLocalPcRequest(request, config)) {
+          jsonResponse(response, 403, { error: 'Local PC access only.' });
+          return;
+        }
+        jsonResponse(response, 200, { token });
         return;
       }
       if (url.pathname === '/api/health') {

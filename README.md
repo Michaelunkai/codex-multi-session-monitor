@@ -6,14 +6,14 @@ Published static shell: https://michaelunkai.github.io/codex-multi-session-monit
 
 Private source: https://github.com/Michaelunkai/codex-multi-session-monitor  ·  Pages-only UI source: https://github.com/Michaelunkai/codex-multi-session-monitor-pages
 
-The hosted shell contains no Codex data or bearer token. It has the private bridge endpoint and a loopback probe range built in. When opened on the monitor PC, it probes `http://127.0.0.1` without a token and connects automatically, even if that browser previously saved a remote token; on another machine that probe is rejected or unreachable and the page waits for the private one-tap access link. A one-tap link carries the access fragment once; the page connects automatically, stores the token in that browser's storage, and removes the fragment from the visible address bar.
+The hosted shell contains no Codex data or bearer token. It has the private bridge endpoint and a loopback probe range built in. When opened on the monitor PC, it probes `http://127.0.0.1` without a token and connects automatically, even if that browser previously saved a remote token; on another machine that probe is rejected or unreachable and the page waits for the private one-tap access link. On the PC, `Copy access link` obtains the token through a local-only endpoint, copies the complete hosted URL, and never requires manually running `STATUS.cmd`. A one-tap link carries the access fragment once; the page connects automatically, stores the token in that browser's storage, and removes the fragment from the visible address bar.
 
 If the local monitor is starting, restarting, or chooses another free port in its reserved range, the hosted wall keeps probing and reconnects without user action. Its loopback CORS response also permits Chrome's Private Network Access preflight only for the published Pages origin; bearer authentication remains mandatory for every remote request.
 
 ## Architecture and exact versions
 
-- Adapter/server: `2.5.4`, dependency-free Node.js production code.
-- Dashboard shell: `2.5.6`, static HTML/CSS/JavaScript build published from the Pages-only checkout.
+- Adapter/server: `2.5.7`, dependency-free Node.js production code.
+- Dashboard shell: `2.5.7`, static HTML/CSS/JavaScript build published from the Pages-only checkout.
 - Portable Node.js: `v24.21.0` Windows x64, stored in `runtime\node` and using built-in `node:sqlite`. The production monitor and supervisor run from the F:-resident `runtime\node\codex-monitor-node.exe` image so broad `node.exe` cleanup cannot terminate them; the original `node.exe` remains available for test tooling.
 - Portable PowerShell launcher: `7.6.6`, stored in `runtime\powershell`.
 - Test-only DOM dependency: LinkeDOM `0.18.12`; its package cache and dependencies are under this root.
@@ -133,3 +133,4 @@ Do not remove `C:\Users\micha\.codex`, the WindowsApps Codex installation, or an
 Keep all new archives, caches, temporary files, dependencies, and build output under this root. Review changes to `app` and `scripts`, copy the three `app\public` assets to both `deploy` and `public-site`, run `scripts\SYNC-PUBLIC-ENDPOINT.ps1` when the stable bridge hostname changes, run `scripts\TEST.cmd`, restart, then run `tests\live-proof.js`, `tests\recovery-proof.ps1`, `tests\android-network-proof.js` when the authorized Android transport is available, and `scripts\AUDIT.ps1`. Push the private source repository and the Pages-only checkout only after the tests pass. Before installing any package, set `TEMP`, `TMP`, `NPM_CONFIG_CACHE`, `NPM_CONFIG_PREFIX`, and `XDG_CACHE_HOME` to the project directories. Never use a global install or the system Node/Python installation.
 
 Validation records are kept under `logs` and the source findings under `findings.md` and `task_plan.md`. The approved visible Chrome connector was unavailable during the PC run, so browser pixels were not claimed as verified; the authenticated HTTPS/SSE path is proven from the PC, while final phone-pixel confirmation remains dependent on an attached authorized Android transport.
+
