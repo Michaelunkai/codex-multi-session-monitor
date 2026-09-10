@@ -13,6 +13,7 @@ If the local monitor is starting, restarting, or chooses another free port in it
 ## Architecture and exact versions
 
 - Adapter/server: `2.5.4`, dependency-free Node.js production code.
+- Dashboard shell: `2.5.5`, static HTML/CSS/JavaScript build published from the Pages-only checkout.
 - Portable Node.js: `v24.21.0` Windows x64, stored in `runtime\node` and using built-in `node:sqlite`.
 - Portable PowerShell launcher: `7.6.6`, stored in `runtime\powershell`.
 - Test-only DOM dependency: LinkeDOM `0.18.12`; its package cache and dependencies are under this root.
