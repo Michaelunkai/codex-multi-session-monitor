@@ -246,6 +246,8 @@ test('published wall auto-connects to the local PC before asking remote devices 
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
   document.dispatchEvent(new Event('DOMContentLoaded'));
+  assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true, 'automatic PC probing must not show the remote token form first');
+  assert.match(document.querySelector('#connectionBadge').textContent, /Looking for this PC/);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
   assert.equal(requests[0].url, 'http://127.0.0.1:8766/api/snapshot');
