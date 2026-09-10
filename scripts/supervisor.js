@@ -90,6 +90,7 @@ async function main(){
     // A new Windows logon is a requested automatic start, including after a prior manual STOP.
     if(process.argv.includes('--logon') && fs.existsSync(stopFile))fs.unlinkSync(stopFile);
     let failures=0;
+    let firstHealthProbe=true;
     let nextBridgeCheck=0;
     let lastBridgeResult='';
     while(!fs.existsSync(stopFile)){
@@ -109,8 +110,12 @@ async function main(){
         }
       }else{
         failures++;
-        if(failures>=2){log('Two health probes failed; recovering monitor.');await launch();failures=0;}
+        // A newly launched logon supervisor has no monitor to wait for. Start
+        // it on the first failed probe; retain the two-probe guard only after
+        // the stack was already established, where it avoids needless churn.
+        if(firstHealthProbe || failures>=2){log(firstHealthProbe ? 'Initial health probe failed; starting monitor.' : 'Two health probes failed; recovering monitor.');await launch();failures=0;}
       }
+      firstHealthProbe=false;
       await new Promise(resolve=>setTimeout(resolve,10000));
     }
     log('Manual STOP observed; supervisor exiting.');
