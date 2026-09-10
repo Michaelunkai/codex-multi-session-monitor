@@ -37,6 +37,25 @@ test('parses the currently active rollout and preserves complete user-visible ou
   assert.equal(parsed.entries[0].text.length, longText.length);
 });
 
+test('exposes current activity and assembles supported message deltas without waiting for completion', () => {
+  const text = rollout([
+    { type: 'event_msg', payload: { type: 'task_started', thread_id: 'thread-1', turn_id: 'turn-1', started_at: 1_800_000_000 } },
+    { type: 'response_item', payload: { type: 'agent_message_delta', thread_id: 'thread-1', turn_id: 'turn-1', item_id: 'msg-live', delta: 'word-by-' } },
+    { type: 'response_item', payload: { type: 'agent_message_delta', thread_id: 'thread-1', turn_id: 'turn-1', item_id: 'msg-live', delta: 'word stream' } },
+    { type: 'event_msg', payload: { type: 'item_started', thread_id: 'thread-1', turn_id: 'turn-1', item: { type: 'CommandExecution', id: 'exec-1', command: 'Get-Process' } } }
+  ]);
+
+  const parsed = parseLiveRollout(text, { now: 1_800_000_004_000 });
+  assert.equal(parsed.active, true);
+  assert.equal(parsed.latestActivity.kind, 'command-started');
+  assert.equal(parsed.latestActivity.label, 'Running command');
+  assert.equal(parsed.latestActivity.detail, 'Get-Process');
+  const partial = parsed.entries.find((entry) => entry.id === 'msg-live');
+  assert.ok(partial);
+  assert.equal(partial.type, 'assistant-delta');
+  assert.equal(partial.text, 'word-by-word stream');
+});
+
 test('only a fresh unfinished rollout is eligible for the running-only dashboard', () => {
   const now = 1_800_000_010_000;
   const config = { liveWindowSeconds: 20 };

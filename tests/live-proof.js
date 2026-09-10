@@ -60,7 +60,8 @@ function streamProof() {
             seen.push({
               generatedAt: snapshot.generatedAt,
               cards: snapshot.sessions.length,
-              digests: snapshot.sessions.map((session) => session.outputDigest)
+              digests: snapshot.sessions.map((session) => session.outputDigest),
+              activities: snapshot.sessions.map((session) => session.activity && [session.activity.kind, session.activity.label, session.activity.ordinal])
             });
             if (seen.length >= 2) {
               clearTimeout(timer);
@@ -111,12 +112,14 @@ function streamProof() {
   assert.equal(new Set(live.sessions.map((session) => session.id)).size, live.sessions.length);
   assert.equal(live.sessions.every((session) => session.status === 'RUNNING'), true);
   assert.equal(live.sessions.every((session) => Array.isArray(session.liveOutput)), true);
+  assert.equal(live.sessions.every((session) => session.activity && session.activity.label && session.activity.at), true);
   assert.match(results[5].body, /Live wall/);
   assert.match(results[6].body, /renderTranscript/);
   assert.match(results[7].body, /\.live-transcript/);
   const current = live.sessions.find((session) => session.id === '01a08737-04b6-7143-832f-25e6c32126c1');
   assert.ok(current, 'current Codex monitor task must be visible as a live card');
   assert.ok(current.liveOutput.length > 0, 'current live card must expose durable output');
+  assert.ok(current.activity && current.activity.label, 'current live card must expose current activity');
   const currentRollout = parseLiveRollout(fs.readFileSync(current.sessionPath, 'utf8'), { now: Date.now() });
   assert.equal(currentRollout.active, true);
   assert.equal(currentRollout.turnId, current.latestTurnId);
@@ -126,6 +129,8 @@ function streamProof() {
     : current.liveOutput.some((entry) => entry.text.length > 320);
   assert.equal(exactOutputMatch, true, 'dashboard must preserve complete durable output text');
   const stream = await streamProof();
+  assert.equal(stream.changed, true, 'authenticated SSE must deliver an automatic changed snapshot');
+  assert.equal(stream.first && stream.latest && JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities), true, 'automatic SSE proof must include a changed live activity record');
   const report = {
     checkedAt: new Date().toISOString(),
     version: health.serverVersion,
@@ -138,10 +143,11 @@ function streamProof() {
     hiddenHistory: live.summary.hiddenNonRunningCount,
     outputSessions: live.sessions.filter((session) => session.liveOutput.length > 0).length,
     allCardsRunning: live.sessions.every((session) => session.status === 'RUNNING'),
-    currentTask: { id: current.id, status: current.status, turnId: current.latestTurnId, outputEntries: current.liveOutput.length, outputChars: current.outputChars },
+    currentTask: { id: current.id, status: current.status, turnId: current.latestTurnId, activity: current.activity, outputEntries: current.liveOutput.length, outputChars: current.outputChars },
     exactDurableOutputMatch: exactOutputMatch,
     assets: results.slice(5).map((result) => ({ status: result.status, bytes: result.body.length })),
     stream,
+    streamActivityChanged: stream.first && stream.latest ? JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities) : false,
     readErrors: health.summary.readErrors,
     telemetryErrors: health.summary.telemetryErrorCount,
     renderedBrowser: 'Not claimed: approved browser connector was unavailable; network/API/SSE proof completed.'

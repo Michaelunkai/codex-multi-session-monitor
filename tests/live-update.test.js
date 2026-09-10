@@ -157,8 +157,10 @@ test('responsive dashboard source locks the wall to running cards with transcrip
   assert.match(html, /RUNNING ONLY/);
   assert.doesNotMatch(html, /scopeSelect|data-filter/);
   assert.match(css, /minmax\(480px, 1fr\)/);
+  assert.match(css, /\.live-activity/);
   assert.match(css, /\.live-transcript/);
   assert.match(css, /@media \(max-width: 780px\)/);
+  assert.match(js, /function renderActivity/);
   assert.match(js, /function renderTranscript/);
   assert.match(js, /EventSource/);
 });

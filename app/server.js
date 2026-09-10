@@ -8,7 +8,7 @@ const https = require('node:https');
 const { URL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 
-const SERVER_VERSION = '2.0.1';
+const SERVER_VERSION = '2.1.0';
 const DEFAULT_PORT = 8765;
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_LIVE_WINDOW_SECONDS = 20;
@@ -232,6 +232,103 @@ function insertLiveEntry(entries, entry) {
   entries.push(entry);
 }
 
+function activityDetail(value) {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return redactExact(value.map((part) => String(part)).join(' '));
+  if (typeof value === 'object') {
+    try { return redactExact(JSON.stringify(value)); } catch { return ''; }
+  }
+  return redactExact(value);
+}
+
+function makeLiveActivity(kind, label, detail, timestampMs, ordinal, source = 'rollout') {
+  return {
+    kind: nonEmpty(kind, 'working'),
+    label: truncate(nonEmpty(label, 'Codex is working'), 120),
+    detail: truncate(activityDetail(detail), 240),
+    at: safeIso(timestampMs) || null,
+    timestampMs: integer(timestampMs),
+    ordinal: integer(ordinal),
+    source
+  };
+}
+
+function itemActivity(item, phase, timestampMs, ordinal) {
+  const type = normalizeStatus(item && item.type);
+  const detail = item && (item.command || item.command_line || item.name || item.tool || item.server);
+  if (type === 'commandexecution') {
+    return makeLiveActivity(
+      phase === 'started' ? 'command-started' : 'command-completed',
+      phase === 'started' ? 'Running command' : 'Command finished',
+      detail,
+      timestampMs,
+      ordinal
+    );
+  }
+  if (type === 'agentmessage' || type === 'assistant') {
+    return makeLiveActivity(
+      phase === 'started' ? 'assistant-started' : 'assistant-completed',
+      phase === 'started' ? 'Writing response' : 'Response committed',
+      '',
+      timestampMs,
+      ordinal
+    );
+  }
+  if (type === 'reasoning') {
+    return makeLiveActivity(
+      phase === 'started' ? 'thinking-started' : 'thinking-updated',
+      phase === 'started' ? 'Codex is thinking' : 'Thinking updated',
+      '',
+      timestampMs,
+      ordinal
+    );
+  }
+  if (type === 'filechange' || type === 'file_change') {
+    return makeLiveActivity(
+      phase === 'started' ? 'file-change-started' : 'file-change-completed',
+      phase === 'started' ? 'Applying file changes' : 'File changes committed',
+      detail,
+      timestampMs,
+      ordinal
+    );
+  }
+  if (type.includes('tool') || type.includes('mcp')) {
+    return makeLiveActivity(
+      phase === 'started' ? 'tool-started' : 'tool-completed',
+      phase === 'started' ? 'Running tool' : 'Tool output committed',
+      detail,
+      timestampMs,
+      ordinal
+    );
+  }
+  if (type === 'plan') {
+    return makeLiveActivity('plan-updated', 'Updating plan', '', timestampMs, ordinal);
+  }
+  return makeLiveActivity(
+    phase === 'started' ? 'item-started' : 'item-completed',
+    phase === 'started' ? 'Working' : 'Work item completed',
+    item && item.type,
+    timestampMs,
+    ordinal
+  );
+}
+
+function deltaInfo(record, payload) {
+  const eventName = (nonEmpty(record && record.type) + ' ' + nonEmpty(payload && payload.type)).toLowerCase();
+  const candidates = [payload && payload.delta, payload && payload.text_delta, payload && payload.output_delta, payload && payload.outputDelta];
+  if (!eventName.includes('delta') && !candidates.some((value) => typeof value === 'string')) return null;
+  const delta = candidates.find((value) => typeof value === 'string' && value.length > 0);
+  if (delta === undefined) return null;
+  const command = eventName.includes('commandexecution') || eventName.includes('command_execution') || eventName.includes('commandexecution');
+  const id = nonEmpty(payload && (payload.item_id || payload.itemId || payload.id), command ? 'live-command' : 'live-assistant');
+  return {
+    id,
+    type: command ? 'command-delta' : 'assistant-delta',
+    delta,
+    label: command ? 'Command output is streaming' : 'Codex output is streaming'
+  };
+}
+
 function rolloutState() {
   return {
     active: false,
@@ -239,7 +336,9 @@ function rolloutState() {
     startedAtMs: 0,
     lastActivityMs: 0,
     lastOrdinal: 0,
-    entries: []
+    entries: [],
+    partials: new Map(),
+    latestActivity: null
   };
 }
 
@@ -262,6 +361,8 @@ function applyRolloutRecord(state, record) {
     state.startedAtMs = epochMilliseconds(payload.started_at || payload.startedAt || payload.started_at_ms);
     state.lastActivityMs = Math.max(state.startedAtMs, payloadTimeMs);
     state.entries = [];
+    state.partials.clear();
+    state.latestActivity = makeLiveActivity('turn-started', 'Turn started', 'Waiting for Codex output', state.lastActivityMs, ordinal);
     return;
   }
   if (payload.type === 'task_complete') {
@@ -269,6 +370,7 @@ function applyRolloutRecord(state, record) {
     if (!completedTurnId || completedTurnId === state.turnId) {
       state.active = false;
       state.lastActivityMs = Math.max(state.lastActivityMs, payloadTimeMs);
+      state.latestActivity = makeLiveActivity('turn-completed', 'Turn completed', '', state.lastActivityMs, ordinal);
     }
     return;
   }
@@ -276,9 +378,28 @@ function applyRolloutRecord(state, record) {
   const recordTurnId = nonEmpty(payload.turn_id || payload.turnId);
   if (recordTurnId && state.turnId && recordTurnId !== state.turnId) return;
   state.lastActivityMs = Math.max(state.lastActivityMs, payloadTimeMs);
+  const delta = deltaInfo(record, payload);
+  if (delta) {
+    const existing = state.partials.get(delta.id);
+    const timestampMs = payloadTimeMs || recordTimestampMs || state.lastActivityMs;
+    const nextText = redactExact((existing ? existing.text : '') + delta.delta);
+    state.partials.set(delta.id, {
+      id: delta.id,
+      type: delta.type,
+      ordinal,
+      at: safeIso(timestampMs) || null,
+      timestampMs: integer(timestampMs),
+      text: nextText,
+      source: 'rollout'
+    });
+    state.latestActivity = makeLiveActivity(delta.type, delta.label, '', timestampMs, ordinal);
+    return;
+  }
   let entry = null;
   if (payload.type === 'item_completed' && payload.item) {
     const item = payload.item;
+    if (item.id) state.partials.delete(String(item.id));
+    state.latestActivity = itemActivity(item, 'completed', payloadTimeMs || recordTimestampMs || state.lastActivityMs, ordinal);
     entry = makeLiveEntry(item.type, item.id, ordinal, Math.max(
       epochMilliseconds(payload.completed_at_ms),
       epochMilliseconds(payload.started_at_ms),
@@ -286,10 +407,26 @@ function applyRolloutRecord(state, record) {
     ), itemOutputText(item), 'rollout');
   } else if (record.type === 'response_item') {
     const output = responseOutputText(payload);
+    const itemType = payload.type === 'message' ? 'assistant' : payload.type;
+    if (payload.id && (payload.type === 'message' || output)) state.partials.delete(String(payload.id));
+    if (payload.type === 'message') {
+      state.latestActivity = makeLiveActivity('assistant-completed', 'Response committed', '', recordTimestampMs || state.lastActivityMs, ordinal);
+    } else if (payload.type === 'custom_tool_call' || payload.type === 'function_call') {
+      state.latestActivity = makeLiveActivity('tool-call', 'Calling tool', payload.name || payload.tool || payload.server, recordTimestampMs || state.lastActivityMs, ordinal);
+    } else if (payload.type === 'reasoning') {
+      state.latestActivity = makeLiveActivity('thinking', 'Codex is thinking', '', recordTimestampMs || state.lastActivityMs, ordinal);
+    } else {
+      state.latestActivity = makeLiveActivity('response-item', 'Codex is working', payload.type, recordTimestampMs || state.lastActivityMs, ordinal);
+    }
     if (output) {
-      const itemType = payload.type === 'message' ? 'assistant' : payload.type;
       entry = makeLiveEntry(itemType, payload.id, ordinal, recordTimestampMs, output, 'rollout');
     }
+  } else if (payload.type === 'item_started' && payload.item) {
+    state.latestActivity = itemActivity(payload.item, 'started', payloadTimeMs || recordTimestampMs || state.lastActivityMs, ordinal);
+  } else if (payload.type === 'token_count') {
+    state.latestActivity = makeLiveActivity('model-working', 'Codex is working', 'Token usage updated', payloadTimeMs || recordTimestampMs || state.lastActivityMs, ordinal);
+  } else {
+    state.latestActivity = makeLiveActivity('event', 'Codex is working', payload.type || record.type, payloadTimeMs || recordTimestampMs || state.lastActivityMs, ordinal);
   }
   if (entry) insertLiveEntry(state.entries, entry);
 }
@@ -301,7 +438,11 @@ function finalizeRolloutState(state) {
     startedAtMs: state.startedAtMs || 0,
     lastActivityMs: state.lastActivityMs || 0,
     lastOrdinal: state.lastOrdinal || 0,
-    entries: state.entries.slice().sort((a, b) => (a.ordinal - b.ordinal) || (a.timestampMs - b.timestampMs))
+    latestActivity: state.latestActivity ? { ...state.latestActivity } : null,
+    entries: [...state.entries, ...state.partials.values()].reduce((all, entry) => {
+      insertLiveEntry(all, entry);
+      return all;
+    }, []).sort((a, b) => (a.ordinal - b.ordinal) || (a.timestampMs - b.timestampMs))
   };
 }
 
@@ -610,6 +751,13 @@ function stableDigest(snapshot) {
       outputDigest: session.outputDigest,
       outputChars: session.outputChars,
       outputTruncated: session.outputTruncated,
+      activity: session.activity && [
+        session.activity.kind,
+        session.activity.label,
+        session.activity.detail,
+        session.activity.at,
+        session.activity.ordinal
+      ],
       progress: session.progress
     }))
   };
@@ -764,7 +912,9 @@ function createLiveAdapter(config, syntheticFile = '') {
     const cacheKey = [
       String(stateUpdatedMs), String(turnId), String(rolloutMtimeMs),
       String(rolloutTelemetry && rolloutTelemetry.lastOrdinal),
-      String(rolloutTelemetry && rolloutTelemetry.entries && rolloutTelemetry.entries.length)
+      String(rolloutTelemetry && rolloutTelemetry.entries && rolloutTelemetry.entries.length),
+      String(rolloutTelemetry && rolloutTelemetry.latestActivity && rolloutTelemetry.latestActivity.ordinal),
+      String(rolloutTelemetry && rolloutTelemetry.latestActivity && rolloutTelemetry.latestActivity.kind)
     ].join(':');
     const cached = detailCache.get(threadId);
     if (cached && cached.key === cacheKey) return cached.value;
@@ -772,6 +922,7 @@ function createLiveAdapter(config, syntheticFile = '') {
       latestItemMs: 0,
       rolloutMtimeMs,
       latestItem: null,
+      activity: null,
       progress: null,
       liveOutput: [],
       outputDigest: '',
@@ -843,6 +994,7 @@ function createLiveAdapter(config, syntheticFile = '') {
         text: latest.text,
         at: latest.at
       } : null,
+      activity: rolloutTelemetry && rolloutTelemetry.latestActivity ? { ...rolloutTelemetry.latestActivity } : null,
       progress: progressItems.map(progressFromItem).find(Boolean) || null,
       liveOutput,
       outputDigest,
@@ -873,6 +1025,10 @@ function createLiveAdapter(config, syntheticFile = '') {
         })).filter((entry) => entry.text)
         : raw.latestOutput ? [makeLiveEntry('synthetic', 'synthetic-' + (index + 1) + '-output-1', 1, lastActivityMs, raw.latestOutput, 'synthetic-test')] : [];
       const latest = liveOutput.length ? liveOutput[liveOutput.length - 1] : null;
+      const activityAt = raw.activity && raw.activity.at ? raw.activity.at : lastActivityAt;
+      const activityMs = raw.activity && raw.activity.timestampMs
+        ? integer(raw.activity.timestampMs, lastActivityMs)
+        : lastActivityMs;
       return {
         id: nonEmpty(raw.id, 'synthetic-' + (index + 1)),
         title: truncate(nonEmpty(raw.title, 'Synthetic session ' + (index + 1)), 180),
@@ -897,6 +1053,25 @@ function createLiveAdapter(config, syntheticFile = '') {
         latestTurnStartedAt: safeIso(integer(raw.latestTurnStartedMs, lastActivityMs)),
         turnCount: integer(raw.turnCount, 1),
         latestItem: latest ? { type: latest.type, preview: truncate(latest.text, 320), text: latest.text, at: latest.at } : null,
+        activity: raw.activity && typeof raw.activity === 'object'
+          ? {
+            kind: nonEmpty(raw.activity.kind, 'synthetic-working'),
+            label: nonEmpty(raw.activity.label, 'Synthetic live event'),
+            detail: nonEmpty(raw.activity.detail),
+            at: activityAt,
+            timestampMs: activityMs,
+            ordinal: integer(raw.activity.ordinal, 1),
+            source: 'synthetic-test'
+          }
+          : {
+            kind: 'synthetic-working',
+            label: 'Synthetic live event',
+            detail: 'Fixture update',
+            at: activityAt,
+            timestampMs: activityMs,
+            ordinal: 1,
+            source: 'synthetic-test'
+          },
         liveOutput,
         outputDigest: crypto.createHash('sha256').update(JSON.stringify(liveOutput)).digest('hex'),
         outputChars: liveOutput.reduce((total, entry) => total + entry.text.length, 0),
@@ -928,7 +1103,7 @@ function createLiveAdapter(config, syntheticFile = '') {
         freshnessSeconds: 0,
         liveWindowSeconds: 20,
         pollMs: 250,
-        outputTransport: 'synthetic fixture'
+        outputTransport: 'synthetic fixture + live activity'
       },
       sessions,
       allSessions: sessions
@@ -1017,6 +1192,15 @@ function createLiveAdapter(config, syntheticFile = '') {
         lastActivityAgeSeconds: classification.ageSeconds,
         elapsedSeconds: classification.elapsedSeconds,
         latestItem,
+        activity: detail.activity || telemetry.latestActivity || {
+          kind: 'working',
+          label: 'Codex is working',
+          detail: 'Fresh rollout event observed',
+          at: safeIso(classification.lastActivityMs),
+          timestampMs: classification.lastActivityMs,
+          ordinal: integer(telemetry.lastOrdinal),
+          source: 'rollout'
+        },
         liveOutput: detail.liveOutput,
         outputDigest: detail.outputDigest,
         outputChars: detail.outputChars,
@@ -1057,7 +1241,7 @@ function createLiveAdapter(config, syntheticFile = '') {
         liveWindowSeconds: config.liveWindowSeconds,
         pollMs: config.pollMs,
         displayMode: 'running-only',
-        outputTransport: 'Codex rollout event records'
+        outputTransport: 'Codex rollout event records + live activity'
       },
       sessions,
       allSessions: sessions

@@ -56,9 +56,11 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
 
   assert.equal(document.querySelectorAll('.session-card').length, 12);
   assert.equal(document.querySelectorAll('[data-filter]').length, 0);
+  assert.equal(document.querySelectorAll('.live-activity').length, 12);
   assert.equal(document.querySelectorAll('.live-transcript').length, 12);
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .live-transcript').textContent, /complete live output/);
+  assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .live-activity').textContent, /Synthetic live event/);
   assert.equal(document.querySelectorAll('.transcript-entry').length, 12);
   document.querySelector('#copyButton').dispatchEvent(new Event('click'));
   await new Promise((resolve) => setImmediate(resolve));
@@ -69,8 +71,10 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
   changed.sessions[0].latestItem.text = 'word-by-word stream update';
   changed.sessions[0].latestItem.preview = 'word-by-word stream update';
   changed.sessions[0].outputDigest = 'changed-digest';
+  changed.sessions[0].activity = { kind: 'assistant-delta', label: 'Codex output is streaming', detail: '', at: new Date().toISOString(), timestampMs: Date.now(), ordinal: 2, source: 'rollout' };
   streams[0].listeners.snapshot({ data: JSON.stringify(changed) });
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"]').textContent, /word-by-word stream update/);
+  assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .live-activity').textContent, /Codex output is streaming/);
   adapter.close();
 });
 
