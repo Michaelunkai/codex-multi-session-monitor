@@ -1,7 +1,7 @@
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 $runtimePath=Join-Path $root 'data\monitor.pid.json'
-$node=Join-Path $root 'runtime\node\node.exe'
+$node=Join-Path $root 'runtime\node\codex-monitor-node.exe'
 $before=Get-Content $runtimePath -Raw | ConvertFrom-Json
 $proc=Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$before.pid)
 if($proc.ExecutablePath -ne $node -or $proc.CommandLine -notlike ('*'+(Join-Path $root 'app\server.js')+'*')){throw 'Refuse to crash a process not belonging to this project.'}

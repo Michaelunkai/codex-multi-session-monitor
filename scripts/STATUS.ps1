@@ -17,7 +17,7 @@ $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
 $token = if (Test-Path -LiteralPath $tokenPath) { (Get-Content -LiteralPath $tokenPath -Raw).Trim() } else { '' }
 $protocol = if ($config.tls.enabled) { 'https' } else { 'http' }
 $runtime = if (Test-Path -LiteralPath $pidPath) { Get-Content -LiteralPath $pidPath -Raw | ConvertFrom-Json } else { $null }
-$node = Join-Path $root 'runtime\node\node.exe'
+$node = Join-Path $root 'runtime\node\codex-monitor-node.exe'
 $serverScript = Join-Path $root 'app\server.js'
 $process = if ($runtime -and $runtime.pid) { Get-CimInstance Win32_Process -Filter ('ProcessId=' + [int]$runtime.pid) -ErrorAction SilentlyContinue } else { $null }
 $exact = $process -and $process.ExecutablePath -eq $node -and $process.CommandLine -like ('*' + $serverScript + '*')

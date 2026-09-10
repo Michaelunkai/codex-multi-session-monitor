@@ -4,7 +4,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 [IO.File]::WriteAllText((Join-Path $root 'data\stop.request'), (Get-Date -Format o))
-$node = Join-Path $root 'runtime\node\node.exe'
+$node = Join-Path $root 'runtime\node\codex-monitor-node.exe'
 $serverScript = Join-Path $root 'app\server.js'
 $pidPath = Join-Path $root 'data\monitor.pid.json'
 $supervisorScript = Join-Path $PSScriptRoot 'supervisor.js'

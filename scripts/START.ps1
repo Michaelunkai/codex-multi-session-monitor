@@ -11,13 +11,18 @@ $logRoot = Join-Path $root 'logs'
 $dataRoot = Join-Path $root 'data'
 $tempRoot = Join-Path $root 'temp'
 $configPath = Join-Path $root 'config\monitor.json'
-$node = Join-Path $root 'runtime\node\node.exe'
+$node = Join-Path $root 'runtime\node\codex-monitor-node.exe'
+$genericNode = Join-Path $root 'runtime\node\node.exe'
 $serverScript = Join-Path $root 'app\server.js'
 $pidPath = Join-Path $dataRoot 'monitor.pid.json'
 $stdoutPath = Join-Path $logRoot 'server.stdout.log'
 $stderrPath = Join-Path $logRoot 'server.stderr.log'
 foreach ($directory in @($logRoot, $dataRoot, $tempRoot, (Join-Path $root 'cache'))) {
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
+}
+if (-not (Test-Path -LiteralPath $node)) {
+    if (-not (Test-Path -LiteralPath $genericNode)) { throw ('Portable Node runtime missing: ' + $genericNode) }
+    Copy-Item -LiteralPath $genericNode -Destination $node -Force
 }
 $env:TEMP = $tempRoot
 $env:TMP = $tempRoot

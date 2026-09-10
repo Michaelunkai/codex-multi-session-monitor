@@ -14,7 +14,7 @@ If the local monitor is starting, restarting, or chooses another free port in it
 
 - Adapter/server: `2.5.4`, dependency-free Node.js production code.
 - Dashboard shell: `2.5.6`, static HTML/CSS/JavaScript build published from the Pages-only checkout.
-- Portable Node.js: `v24.21.0` Windows x64, stored in `runtime\node` and using built-in `node:sqlite`.
+- Portable Node.js: `v24.21.0` Windows x64, stored in `runtime\node` and using built-in `node:sqlite`. The production monitor and supervisor run from the F:-resident `runtime\node\codex-monitor-node.exe` image so broad `node.exe` cleanup cannot terminate them; the original `node.exe` remains available for test tooling.
 - Portable PowerShell launcher: `7.6.6`, stored in `runtime\powershell`.
 - Test-only DOM dependency: LinkeDOM `0.18.12`; its package cache and dependencies are under this root.
 - Dashboard: local HTML/CSS/JavaScript, authenticated Server-Sent Events (SSE), 2-second polling fallback, running-only responsive live wall with a per-card live-activity line and large independent output panes. Current wall clients fetch one full running view at connection, then apply compact ordered transcript deltas to only the changed card and DOM entry. A stalled client therefore cannot accumulate repeated full transcripts, and one changing word does not make Android re-download every session. A card uses the official Desktop IPC stream when that stream publishes it; IPC-hidden child/subagent tasks use their own append-only live Codex rollout instead.

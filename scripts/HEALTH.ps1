@@ -9,7 +9,7 @@ if (-not (Test-Path -LiteralPath $configPath)) { exit 2 }
 $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
 $runtime = if (Test-Path -LiteralPath $pidPath) { Get-Content -LiteralPath $pidPath -Raw | ConvertFrom-Json } else { $null }
 if (-not $runtime -or -not $runtime.pid) { Write-Output 'Health probe failed: no runtime PID.'; exit 2 }
-$node = Join-Path $root 'runtime\node\node.exe'
+$node = Join-Path $root 'runtime\node\codex-monitor-node.exe'
 $serverScript = Join-Path $root 'app\server.js'
 $process = Get-CimInstance Win32_Process -Filter ('ProcessId=' + [int]$runtime.pid) -ErrorAction SilentlyContinue
 if (-not ($process -and $process.ExecutablePath -eq $node -and $process.CommandLine -like ('*' + $serverScript + '*'))) {
