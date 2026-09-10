@@ -13,7 +13,7 @@ If the local monitor is starting, restarting, or chooses another free port in it
 ## Architecture and exact versions
 
 - Adapter/server: `2.5.7`, dependency-free Node.js production code.
-- Dashboard shell: `2.5.7`, static HTML/CSS/JavaScript build published from the Pages-only checkout.
+- Dashboard shell: `2.5.8`, static HTML/CSS/JavaScript build published from the Pages-only checkout (cache-busted after the latest-output viewport fix).
 - Portable Node.js: `v24.21.0` Windows x64, stored in `runtime\node` and using built-in `node:sqlite`. The production monitor and supervisor run from the F:-resident `runtime\node\codex-monitor-node.exe` image so broad `node.exe` cleanup cannot terminate them; the original `node.exe` remains available for test tooling.
 - Portable PowerShell launcher: `7.6.6`, stored in `runtime\powershell`.
 - Test-only DOM dependency: LinkeDOM `0.18.12`; its package cache and dependencies are under this root.
