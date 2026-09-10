@@ -253,6 +253,43 @@ function makeLiveActivity(kind, label, detail, timestampMs, ordinal, source = 'r
   };
 }
 
+function parseLogActivity(row) {
+  if (!row || !row.thread_id) return null;
+  const body = nonEmpty(row.feedback_log_body);
+  const lower = body.toLowerCase();
+  const timestampMs = epochMilliseconds(row.ts);
+  const ordinal = integer(row.id);
+  let kind = 'log-event';
+  let label = 'Codex is working';
+  let detail = '';
+  if (lower.includes('otel.name="reasoning"') || lower.includes('item_type="reasoning"')) {
+    kind = 'thinking';
+    label = 'Codex is thinking';
+  } else if (lower.includes('otel.name="custom_tool_call"') || lower.includes('item_type="custom_tool_call"')) {
+    kind = 'tool-call';
+    label = 'Calling tool';
+    const match = /tool_name=([^\s}]+)/i.exec(body);
+    detail = match ? match[1].replace(/^"|"$/g, '') : '';
+  } else if (lower.includes('item_type="commandexecution"') || lower.includes('item_type="command_execution"')) {
+    kind = 'command-started';
+    label = 'Running command';
+  } else if (lower.includes('item_type="message"')) {
+    kind = 'assistant-started';
+    label = 'Writing response';
+  } else if (lower.includes('failed to project durable rollout')) {
+    kind = 'persistence-warning';
+    label = 'Codex is working';
+    detail = 'Live output projection reported a persistence warning';
+  } else if (lower.includes('persist_rollout_items') || lower.includes('append_items')) {
+    kind = 'persisting-output';
+    label = 'Saving live output';
+  } else if (lower.includes('receiving_stream') || lower.includes('stream_request') || lower.includes('sampling_request')) {
+    kind = 'model-working';
+    label = 'Codex is working';
+  }
+  return makeLiveActivity(kind, label, detail, timestampMs, ordinal, 'codex-logs');
+}
+
 function itemActivity(item, phase, timestampMs, ordinal) {
   const type = normalizeStatus(item && item.type);
   const detail = item && (item.command || item.command_line || item.name || item.tool || item.server);
@@ -782,6 +819,7 @@ function normalizeConfig(input, root) {
   const stateDb = stripExtendedPrefix(nonEmpty(paths.stateDb, path.join(process.env.USERPROFILE || '', '.codex', 'state_5.sqlite')));
   const historyDb = stripExtendedPrefix(nonEmpty(paths.historyDb, path.join(process.env.USERPROFILE || '', '.codex', 'thread_history_1.sqlite')));
   const sessionIndex = stripExtendedPrefix(nonEmpty(paths.sessionIndex, path.join(process.env.USERPROFILE || '', '.codex', 'session_index.jsonl')));
+  const logsDb = stripExtendedPrefix(nonEmpty(paths.logsDb, path.join(process.env.USERPROFILE || '', '.codex', 'logs_2.sqlite')));
   const tokenFile = stripExtendedPrefix(nonEmpty((config.auth || {}).tokenFile, path.join(root, 'config', 'access.token')));
   const tls = config.tls || {};
   const corsOrigins = Array.isArray(config.corsOrigins)
@@ -800,7 +838,7 @@ function normalizeConfig(input, root) {
     maxSessions: Math.max(10, integer(config.maxSessions, DEFAULT_MAX_SESSIONS)),
     maxLiveOutputChars: Math.max(10000, integer(config.maxLiveOutputChars, DEFAULT_MAX_LIVE_OUTPUT_CHARS)),
     corsOrigins: Array.from(new Set(corsOrigins)),
-    paths: { stateDb, historyDb, sessionIndex },
+    paths: { stateDb, historyDb, sessionIndex, logsDb },
     auth: {
       required: config.auth && config.auth.required !== undefined ? Boolean(config.auth.required) : true,
       tokenFile
@@ -827,6 +865,7 @@ function readToken(config) {
 function createLiveAdapter(config, syntheticFile = '') {
   let stateDb = null;
   let historyDb = null;
+  let logsDb = null;
   let indexSignature = '';
   let indexMap = new Map();
   const detailCache = new Map();
@@ -905,6 +944,30 @@ function createLiveAdapter(config, syntheticFile = '') {
       counts.set(String(row.thread_id), integer(row.count));
     }
     return { turns, counts };
+  }
+
+  function queryRecentLogActivities(threadIds, now) {
+    const result = new Map();
+    if (!config.paths.logsDb || !threadIds.length) return result;
+    try {
+      logsDb = openDb(logsDb, config.paths.logsDb);
+      const ids = Array.from(new Set(threadIds.map((id) => String(id)).filter(Boolean)));
+      if (!ids.length) return result;
+      const placeholders = ids.map(() => '?').join(',');
+      const minimumTs = Math.floor((now - (config.liveWindowSeconds + 5) * 1000) / 1000);
+      const rows = logsDb.prepare([
+        'SELECT id, ts, ts_nanos, thread_id, target, feedback_log_body',
+        'FROM logs WHERE thread_id IN (' + placeholders + ') AND ts >= ? ORDER BY id ASC LIMIT 20000'
+      ].join(' ')).all(...ids, minimumTs);
+      for (const row of rows) {
+        const activity = parseLogActivity(row);
+        if (activity) result.set(String(row.thread_id), activity);
+      }
+    } catch {
+      // The optional diagnostic projection may be busy or absent. Rollout
+      // telemetry remains the authoritative fail-closed source.
+    }
+    return result;
   }
 
   function queryDetail(threadId, turnId, rolloutPath, stateUpdatedMs, rolloutTelemetry) {
@@ -1133,6 +1196,12 @@ function createLiveAdapter(config, syntheticFile = '') {
     let persistedInProgressCount = 0;
     let activeRolloutCount = 0;
     let telemetryErrorCount = 0;
+    const inProgressThreadIds = [];
+    for (const row of stateRows) {
+      const turn = turnData.turns.get(String(row.id));
+      if (normalizeStatus(turn && turn.status) === 'inprogress') inProgressThreadIds.push(String(row.id));
+    }
+    const recentLogActivities = queryRecentLogActivities(inProgressThreadIds, now);
     for (const row of stateRows) {
       const id = String(row.id);
       const turn = turnData.turns.get(id) || null;
@@ -1158,6 +1227,11 @@ function createLiveAdapter(config, syntheticFile = '') {
         ? rolloutTracker(meta.rolloutPath, now)
         : { active: false, lastActivityMs: 0, rolloutMtimeMs };
       telemetry.rolloutMtimeMs = Math.max(integer(telemetry.rolloutMtimeMs), rolloutMtimeMs);
+      const logActivity = recentLogActivities.get(id);
+      if (telemetry.active && logActivity && logActivity.timestampMs >= integer(telemetry.lastActivityMs)) {
+        telemetry.lastActivityMs = logActivity.timestampMs;
+        telemetry.latestActivity = logActivity;
+      }
       if (telemetry.active) activeRolloutCount += 1;
       if (telemetry.error) telemetryErrorCount += 1;
       const classification = classifyLiveSession(telemetry, now, config);
@@ -1253,8 +1327,10 @@ function createLiveAdapter(config, syntheticFile = '') {
     close() {
       try { if (stateDb) stateDb.close(); } catch {}
       try { if (historyDb) historyDb.close(); } catch {}
+      try { if (logsDb) logsDb.close(); } catch {}
       stateDb = null;
       historyDb = null;
+      logsDb = null;
     }
   };
 }
@@ -1611,6 +1687,7 @@ module.exports = {
   classifySession,
   classifyLiveSession,
   parseLiveRollout,
+  parseLogActivity,
   createRolloutTracker,
   redactExact,
   createLiveAdapter,

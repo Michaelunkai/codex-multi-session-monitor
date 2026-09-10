@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   parseLiveRollout,
+  parseLogActivity,
   classifyLiveSession,
   createRolloutTracker
 } = require('../app/server.js');
@@ -54,6 +55,20 @@ test('exposes current activity and assembles supported message deltas without wa
   assert.ok(partial);
   assert.equal(partial.type, 'assistant-delta');
   assert.equal(partial.text, 'word-by-word stream');
+});
+
+test('maps the optional read-only Codex log projection to a safe per-thread activity label', () => {
+  const activity = parseLogActivity({
+    id: 42,
+    ts: 1_800_000_004,
+    thread_id: 'thread-1',
+    target: 'codex_core::stream_events_utils',
+    feedback_log_body: 'session_loop{thread_id=thread-1}:receiving_stream:handle_responses{otel.name="reasoning"}'
+  });
+  assert.equal(activity.kind, 'thinking');
+  assert.equal(activity.label, 'Codex is thinking');
+  assert.equal(activity.source, 'codex-logs');
+  assert.equal(activity.timestampMs, 1_800_000_004_000);
 });
 
 test('only a fresh unfinished rollout is eligible for the running-only dashboard', () => {
