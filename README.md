@@ -12,7 +12,7 @@ If the local monitor is starting, restarting, or chooses another free port in it
 
 ## Architecture and exact versions
 
-- Adapter/server: `2.5.2`, dependency-free Node.js production code.
+- Adapter/server: `2.5.4`, dependency-free Node.js production code.
 - Portable Node.js: `v24.21.0` Windows x64, stored in `runtime\node` and using built-in `node:sqlite`.
 - Portable PowerShell launcher: `7.6.6`, stored in `runtime\powershell`.
 - Test-only DOM dependency: LinkeDOM `0.18.12`; its package cache and dependencies are under this root.
@@ -131,4 +131,4 @@ Do not remove `C:\Users\micha\.codex`, the WindowsApps Codex installation, or an
 
 Keep all new archives, caches, temporary files, dependencies, and build output under this root. Review changes to `app` and `scripts`, copy the three `app\public` assets to both `deploy` and `public-site`, run `scripts\SYNC-PUBLIC-ENDPOINT.ps1` when the stable bridge hostname changes, run `scripts\TEST.cmd`, restart, then run `tests\live-proof.js`, `tests\recovery-proof.ps1`, `tests\android-network-proof.js` when the authorized Android transport is available, and `scripts\AUDIT.ps1`. Push the private source repository and the Pages-only checkout only after the tests pass. Before installing any package, set `TEMP`, `TMP`, `NPM_CONFIG_CACHE`, `NPM_CONFIG_PREFIX`, and `XDG_CACHE_HOME` to the project directories. Never use a global install or the system Node/Python installation.
 
-Validation records are kept under `logs` and the source findings under `findings.md` and `task_plan.md`. The approved visible Chrome connector was unavailable during the PC run, so phone browser pixels were not claimed as verified; the Android HTTPS/SSE network path was tested through the authorized device transport.
+Validation records are kept under `logs` and the source findings under `findings.md` and `task_plan.md`. The approved visible Chrome connector was unavailable during the PC run, so browser pixels were not claimed as verified; the authenticated HTTPS/SSE path is proven from the PC, while final phone-pixel confirmation remains dependent on an attached authorized Android transport.
