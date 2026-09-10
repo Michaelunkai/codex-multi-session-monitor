@@ -44,6 +44,7 @@ try {
     Healthy = [bool]($health -and $health.ok)
     PID = if ($exact) { [int]$runtime.pid } else { $null }
     Address = $protocol + '://' + $config.bindHost + ':' + $addressPort + '/'
+    LocalPcAccess = if ($exact) { 'automatic; open Address on this PC' } else { 'unavailable' }
     Scope = if ($config.bindHost -eq '127.0.0.1') { 'localhost only' } else { 'private LAN address' }
     DiscoveredSessions = if ($health) { [int]$health.summary.totalNonArchived } else { $null }
     RunningSessions = if ($health) { [int]$health.summary.runningCount } else { $null }

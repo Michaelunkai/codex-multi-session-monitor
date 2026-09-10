@@ -165,7 +165,8 @@ if ($existing -and $existing.pid) {
         if ($health -and $health.ok) {
             Write-StartLog ('Monitor already running; PID ' + $existing.pid + '.')
             Write-Output ('Dashboard: ' + $existingProtocol + '://' + $existingHost + ':' + $existing.port + '/')
-            if (-not $QuietAccess) { Write-Output 'Private access: use the deployed Copy access link button or STATUS.cmd -ShowAccessUrl when intentionally generating a link.' }
+            Write-Output 'Local PC: open the Dashboard above; it connects automatically without a token.'
+            if (-not $QuietAccess) { Write-Output 'Remote access: use the deployed Copy access link button or STATUS.cmd -ShowAccessUrl when intentionally generating a link.' }
             Ensure-PrivateBridge -MonitorPort ([int]$existing.port)
             Ensure-Supervisor
             exit 0
@@ -216,6 +217,7 @@ Ensure-PrivateBridge -MonitorPort $listenPort
 Write-Output ''
 Write-Output 'Codex Multi-Session Monitor is ready.'
 Write-Output ('Dashboard: ' + $protocol + '://' + $bindHost + ':' + $listenPort + '/')
+Write-Output 'Local PC: open the Dashboard above; it connects automatically without a token.'
 if ($bindHost -eq '127.0.0.1') {
     Write-Output 'Android access: unavailable on localhost; run START.ps1 after joining a private LAN or use -LocalOnly only for PC diagnostics.'
 } else {
