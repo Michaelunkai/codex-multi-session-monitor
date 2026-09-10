@@ -9,6 +9,9 @@ $configPath = Join-Path $root 'config\monitor.json'
 $pidPath = Join-Path $root 'data\monitor.pid.json'
 $tokenPath = Join-Path $root 'config\access.token'
 $publicUrlPath = Join-Path $root 'data\tailscale\public-url.txt'
+$runKey = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
+$runValue = ''
+try { $runValue = [string](Get-ItemProperty -LiteralPath $runKey -Name 'Codex-MultiSession-Monitor' -ErrorAction Stop).'Codex-MultiSession-Monitor' } catch {}
 if (-not (Test-Path -LiteralPath $configPath)) { throw 'Monitor configuration is missing. Run START.ps1.' }
 $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
 $token = if (Test-Path -LiteralPath $tokenPath) { (Get-Content -LiteralPath $tokenPath -Raw).Trim() } else { '' }
@@ -65,6 +68,8 @@ try {
     PrivateBridgeLoggedIn = if ($bridgeStatus) { [bool]$bridgeStatus.LoggedIn } else { $false }
     PrivateBridgeUrl = if ($bridgeStatus) { [string]$bridgeStatus.FunnelUrl } else { '' }
     PrivateBridgeAuthUrl = if ($bridgeStatus) { [string]$bridgeStatus.AuthUrl } else { '' }
+    AutoStartRegistered = [bool]($runValue -match [regex]::Escape((Join-Path $root 'scripts\AUTOSTART.vbs')) -and $runValue -match 'wscript\.exe')
+    AutoStartMode = if ($runValue) { 'current-user Run key -> F:-resident detached launcher' } else { 'not registered' }
 } | Format-List
 if ($ShowAccessUrl -and $exact) {
     $publicEndpoint = if (Test-Path -LiteralPath $publicUrlPath) { (Get-Content -LiteralPath $publicUrlPath -Raw).Trim() } else { '' }

@@ -10,6 +10,9 @@ foreach($base in @('C:\Users\micha\AppData\Local','C:\Users\micha\AppData\Roamin
 $drive=[IO.DriveInfo]::new('F:\')
 $acl=Get-Acl (Join-Path $root 'config\access.token')
 $keyAcl=Get-Acl (Join-Path $root 'config\tls\server-key.pem')
-$report=[pscustomobject]@{CheckedAt=(Get-Date -Format o);Root=$root;FileCount=$files.Count;TotalBytes=($files|Measure-Object Length -Sum).Sum;Filesystem=$drive.DriveFormat;FreeBytes=$drive.AvailableFreeSpace;ReparsePoints=$links.Count;CResidueChecks=$checks;TokenAcl=$acl.AccessToString;PrivateKeyAcl=$keyAcl.AccessToString;ControlledOSRegistration='Windows scheduled task Codex-MultiSession-Monitor; definition exported under config';Caveat='Targeted residue scan; no claim of zero OS, Codex, browser, or tooling writes outside F:. Existing npm directories preserved.'}
+$runKey='Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
+$runValue=''
+try{$runValue=[string](Get-ItemProperty -LiteralPath $runKey -Name 'Codex-MultiSession-Monitor' -ErrorAction Stop).'Codex-MultiSession-Monitor'}catch{}
+$report=[pscustomobject]@{CheckedAt=(Get-Date -Format o);Root=$root;FileCount=$files.Count;TotalBytes=($files|Measure-Object Length -Sum).Sum;Filesystem=$drive.DriveFormat;FreeBytes=$drive.AvailableFreeSpace;ReparsePoints=$links.Count;CResidueChecks=$checks;TokenAcl=$acl.AccessToString;PrivateKeyAcl=$keyAcl.AccessToString;ControlledOSRegistration='Current-user Run value Codex-MultiSession-Monitor, invoking the F:-resident detached launcher through built-in Windows Script Host';AutoStartValue=$runValue;Caveat='Targeted residue scan; no claim of zero OS, Codex, browser, or tooling writes outside F:. Existing npm directories preserved.'}
 $report|ConvertTo-Json -Depth 5|Set-Content (Join-Path $root 'logs\storage-audit.json') -Encoding utf8NoBOM
 $report|Format-List

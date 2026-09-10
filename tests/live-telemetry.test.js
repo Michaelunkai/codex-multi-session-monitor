@@ -4,13 +4,16 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { DatabaseSync } = require('node:sqlite');
 const {
   parseLiveRollout,
   parseLogActivity,
   classifyLiveSession,
   createRolloutTracker,
   applyIpcPatches,
-  extractIpcTelemetry
+  extractIpcTelemetry,
+  stabilizeIpcTelemetry,
+  createLiveAdapter
 } = require('../app/server.js');
 
 function rollout(records) {
@@ -79,6 +82,7 @@ test('only a fresh unfinished rollout is eligible for the running-only dashboard
   assert.equal(classifyLiveSession({
     active: true,
     lastActivityMs: now - 2_000,
+    rolloutMtimeMs: now - 2_000,
     turnId: 'turn-1'
   }, now, config).status, 'RUNNING');
   assert.equal(classifyLiveSession({
@@ -89,6 +93,13 @@ test('only a fresh unfinished rollout is eligible for the running-only dashboard
   assert.equal(classifyLiveSession({
     active: true,
     lastActivityMs: now - 21_000,
+    rolloutMtimeMs: now - 21_000,
+    turnId: 'turn-1'
+  }, now, config).status, 'INACTIVE');
+  assert.equal(classifyLiveSession({
+    active: true,
+    lastActivityMs: now - 1_000,
+    rolloutMtimeMs: now - 21_000,
     turnId: 'turn-1'
   }, now, config).status, 'INACTIVE');
 });
@@ -144,6 +155,71 @@ test('incremental rollout tracking exposes appended output and removes the card 
   }
 });
 
+test('labels a fresh IPC-hidden subagent rollout as a live Codex rollout stream', () => {
+  const directory = path.join(__dirname, '..', 'temp', 'live-rollout-source-test');
+  const statePath = path.join(directory, 'state.sqlite');
+  const historyPath = path.join(directory, 'history.sqlite');
+  const rolloutPath = path.join(directory, 'subagent.jsonl');
+  const now = Date.now();
+  fs.rmSync(directory, { recursive: true, force: true });
+  fs.mkdirSync(directory, { recursive: true });
+  try {
+    fs.writeFileSync(rolloutPath, rollout([
+      { type: 'event_msg', payload: { type: 'task_started', thread_id: 'subagent-1', turn_id: 'turn-1', started_at: Math.floor(now / 1000) } },
+      { type: 'response_item', payload: { type: 'agent_message_delta', thread_id: 'subagent-1', turn_id: 'turn-1', item_id: 'message-1', delta: 'exact live rollout text' } }
+    ]));
+    const stateDb = new DatabaseSync(statePath);
+    stateDb.exec([
+      'CREATE TABLE threads (id TEXT, rollout_path TEXT, created_at INTEGER, updated_at INTEGER, source TEXT, model_provider TEXT, cwd TEXT, title TEXT, archived INTEGER, first_user_message TEXT, agent_nickname TEXT, agent_role TEXT, model TEXT, created_at_ms INTEGER, updated_at_ms INTEGER, thread_source TEXT, preview TEXT, recency_at_ms INTEGER, name TEXT, project_id TEXT);',
+      'INSERT INTO threads VALUES (\'subagent-1\', ?, 0, 0, \'{"subagent":{"thread_spawn":{"agent_nickname":"Zeno"}}}\', \'\', \'F:\\\\project\', \'Untitled Codex session\', 0, \'\', \'Zeno\', \'explorer\', \'\', 0, ?, \'subagent\', \'\', 0, \'\', \'\');'
+    ].join('\n'));
+    stateDb.prepare('UPDATE threads SET rollout_path = ?, updated_at_ms = ? WHERE id = ?').run(rolloutPath, now, 'subagent-1');
+    stateDb.close();
+    const historyDb = new DatabaseSync(historyPath);
+    historyDb.exec([
+      'CREATE TABLE thread_turns (thread_id TEXT, turn_id TEXT, status TEXT, started_at INTEGER, completed_at INTEGER, duration_ms INTEGER, error_json TEXT, first_user_item_id TEXT, final_agent_item_id TEXT);',
+      'CREATE TABLE thread_items (thread_id TEXT, turn_id TEXT, item_type TEXT, item_json TEXT, created_at_ms INTEGER, rollout_ordinal INTEGER);',
+      "INSERT INTO thread_turns VALUES ('subagent-1', 'turn-1', 'inProgress', " + Math.floor(now / 1000) + ", 0, 0, '', '', '');"
+    ].join('\n'));
+    historyDb.prepare('INSERT INTO thread_items VALUES (?, ?, ?, ?, ?, ?)').run(
+      'subagent-1',
+      'turn-1',
+      'AgentMessage',
+      JSON.stringify({ type: 'AgentMessage', id: 'message-1', content: [{ type: 'output_text', text: 'exact live rollout text' }] }),
+      now,
+      2
+    );
+    historyDb.close();
+    const adapter = createLiveAdapter({
+      liveWindowSeconds: 20,
+      activeWindowSeconds: 600,
+      staleWindowSeconds: 1800,
+      attentionWindowSeconds: 900,
+      relevantHours: 24,
+      maxSessions: 10,
+      maxLiveOutputChars: 100000,
+      paths: { stateDb: statePath, historyDb: historyPath, sessionIndex: '', logsDb: '' }
+    });
+    try {
+      const snapshot = adapter.snapshot();
+      const session = snapshot.sessions[0];
+      assert.ok(session);
+      assert.equal(session.status, 'RUNNING');
+      assert.equal(session.title, 'Codex subagent · Zeno');
+      assert.equal(session.liveTransport, 'codex-rollout-live');
+      assert.equal(session.activity.source, 'rollout');
+      assert.deepEqual(session.liveOutput.map((entry) => entry.source), ['rollout']);
+      assert.deepEqual(session.liveOutput.map((entry) => entry.text), ['exact live rollout text']);
+      assert.match(snapshot.summary.outputTransport, /append-only Codex rollout live stream/i);
+      assert.doesNotMatch(snapshot.summary.outputTransport, /fallback/i);
+    } finally {
+      adapter.close();
+    }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('replays Codex IPC patches and exposes the exact in-progress response text', () => {
   const state = {
     id: 'thread-1',
@@ -175,4 +251,27 @@ test('replays Codex IPC patches and exposes the exact in-progress response text'
   assert.equal(telemetry.entries[0].text, 'Hello word-by-word in real time.');
   assert.equal(telemetry.latestActivity.kind, 'ipc-live');
   assert.equal(telemetry.latestActivity.source, 'codex-ipc');
+});
+
+test('does not turn an unchanged repeated IPC snapshot into fake fresh activity', () => {
+  const state = {
+    turnHistory: {
+      history: {
+        entitiesByKey: {
+          'turn:turn-1': {
+            turnId: 'turn-1',
+            turnStartedAtMs: 1_800_000_000_000,
+            status: 'inProgress',
+            items: [{ type: 'agentMessage', id: 'message-1', text: 'unchanged live text' }]
+          }
+        }
+      }
+    }
+  };
+  const first = extractIpcTelemetry(state, { receivedAtMs: 1_800_000_010_000, revision: 7 });
+  const repeated = extractIpcTelemetry(state, { receivedAtMs: 1_800_000_020_000, revision: 8 });
+  const stabilized = stabilizeIpcTelemetry(repeated, first);
+  assert.equal(stabilized.lastActivityMs, first.lastActivityMs);
+  assert.equal(stabilized.latestActivity.at, first.latestActivity.at);
+  assert.equal(stabilized.entries[0].text, 'unchanged live text');
 });

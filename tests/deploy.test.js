@@ -26,3 +26,21 @@ test('hosted bundle is the same running-only UI and contains no local secrets', 
   assert.equal(vercel.rewrites[0].destination, '/deploy/index.html');
   assert.equal(vercel.rewrites[1].destination, '/deploy/$1');
 });
+
+test('automatic startup uses a direct F-resident Run value and retires only the project-owned legacy task', () => {
+  const autostart = fs.readFileSync(path.join(root, 'scripts', 'ENABLE-AUTOSTART.ps1'), 'utf8');
+  const disableAutostart = fs.readFileSync(path.join(root, 'scripts', 'DISABLE-AUTOSTART.ps1'), 'utf8');
+  const detachedLauncher = fs.readFileSync(path.join(root, 'scripts', 'AUTOSTART.vbs'), 'utf8');
+  assert.match(autostart, /HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run/);
+  assert.match(autostart, /wscript\.exe/);
+  assert.match(autostart, /AUTOSTART\.vbs/);
+  assert.match(autostart, /Remove-ProjectLegacyTask/);
+  assert.match(autostart, /\$taskXml -notmatch/);
+  assert.doesNotMatch(autostart, /RunCommandHidden/);
+  assert.match(disableAutostart, /Remove-ItemProperty/);
+  assert.match(disableAutostart, /Codex-MultiSession-Monitor/);
+  assert.match(detachedLauncher, /WScript\.Shell/);
+  assert.match(detachedLauncher, /shell\.Run command, 0, False/);
+  assert.match(detachedLauncher, /runtime\\powershell\\pwsh\.exe/);
+  assert.match(detachedLauncher, /START\.ps1/);
+});

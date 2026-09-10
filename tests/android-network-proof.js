@@ -17,7 +17,7 @@ const endpointUrl=new URL(endpoint);
 if(endpointUrl.protocol!=='https:'||!/\.ts\.net$/i.test(endpointUrl.hostname))throw Error('Expected the private HTTPS Funnel endpoint.');
 function phoneGet(route,stream=false){
  const config=['url = "'+endpointUrl.origin+route+'"',
-  'header = "Authorization: Bearer '+token+'"','silent','show-error','fail','connect-timeout = 5','max-time = '+(stream?5:15)].join('\n')+'\n';
+  'header = "Authorization: Bearer '+token+'"','silent','show-error','fail','connect-timeout = 5','max-time = '+(stream?10:15)].join('\n')+'\n';
  try {return call(['shell','curl','--config','-'],{input:config,encoding:'utf8',stdio:['pipe','pipe','pipe']});}
  catch(error){
   if(stream&&error.status===28&&error.stdout)return error.stdout;
@@ -39,16 +39,28 @@ const health=JSON.parse(phoneGet('/api/health'));
 const fullSnapshotTransfer=phoneTransferStats('/api/snapshot?scope=all');
 const [fullSnapshotStatus,fullSnapshotBytesText]=fullSnapshotTransfer.split('|');
 const fullSnapshotBytes=Number(fullSnapshotBytesText);
+const fullSnapshot=JSON.parse(phoneGet('/api/snapshot?scope=all'));
 const snapshot=JSON.parse(phoneGet('/api/snapshot?scope=all&compact=1'));
 const html=phoneGet('/');
 const js=phoneGet('/app.js');
-const streamFrames=phoneGet('/events?compact=1',true).split('\n').filter(line=>line.startsWith('data: ')).map(line=>JSON.parse(line.slice(6)));
-const directLive=snapshot.sessions.length>0&&snapshot.sessions.every(session=>session.liveTransport==='codex-ipc'&&session.activity?.source==='codex-ipc'&&session.liveOutputCount>0&&session.outputChars>0&&/^[a-f0-9]{64}$/i.test(session.outputDigest||''));
-if(!health.ok||fullSnapshotStatus!=='200'||!Number.isFinite(fullSnapshotBytes)||fullSnapshotBytes<=0||snapshot.compact!==true||snapshot.scope!=='running-now'||snapshot.displayMode!=='running-only'||!snapshot.sessions.every(session=>session.status==='RUNNING')||!directLive||!html.includes('Live wall')||!js.includes('EventSource'))throw Error('Android endpoint checks failed.');
+ const streamEvents=phoneGet('/events?compact=1&mode=delta',true).split('\n\n').map(frame=>{
+  const event=frame.split('\n').find(line=>line.startsWith('event: '));
+  const data=frame.split('\n').find(line=>line.startsWith('data: '));
+  return event&&data?{event:event.slice(7),body:JSON.parse(data.slice(6))}:null;
+ }).filter(Boolean);
+ const deltaFrames=streamEvents.filter(frame=>frame.event==='delta').map(frame=>frame.body);
+ const compactDelta=deltaFrames.some(delta=>delta.type==='delta'&&Number.isInteger(delta.baseRevision)&&Number.isInteger(delta.revision)&&delta.revision===delta.baseRevision+1&&Array.isArray(delta.updated)&&delta.updated.every(update=>update.session&&!Object.hasOwn(update.session,'liveOutput')));
+const realLive=fullSnapshot.sessions.length>0&&fullSnapshot.sessions.every(session=>{
+ const exactOutput=Array.isArray(session.liveOutput)&&session.liveOutput.length>0&&session.outputChars>0&&/^[a-f0-9]{64}$/i.test(session.outputDigest||'');
+ if(session.liveTransport==='codex-ipc')return session.activity?.source==='codex-ipc'&&exactOutput&&session.liveOutput.every(entry=>entry.source==='codex-ipc');
+ if(session.liveTransport==='codex-rollout-live')return session.activity?.source==='rollout'&&exactOutput&&session.liveOutput.every(entry=>entry.source==='rollout');
+ return false;
+});
+if(!health.ok||fullSnapshotStatus!=='200'||!Number.isFinite(fullSnapshotBytes)||fullSnapshotBytes<=0||snapshot.compact!==true||snapshot.scope!=='running-now'||snapshot.displayMode!=='running-only'||!snapshot.sessions.every(session=>session.status==='RUNNING')||!realLive||!html.includes('Live wall')||!js.includes('EventSource')||!streamEvents.some(frame=>frame.event==='changed')||!compactDelta)throw Error('Android endpoint checks failed.');
 const report={checkedAt:new Date().toISOString(),transport:serial,hardware,model,endpoint,
- certificateChainVerifiedByAndroidCurl:true,credentialsPassedViaStdin:true,androidHttpHealth:health.ok,fullSnapshotStatus,fullSnapshotBytes,compactSnapshot:true,runningOnly:snapshot.scope==='running-now'&&snapshot.displayMode==='running-only',directCodexIpc:directLive,runningCards:snapshot.sessions.length,
+ certificateChainVerifiedByAndroidCurl:true,credentialsPassedViaStdin:true,androidHttpHealth:health.ok,fullSnapshotStatus,fullSnapshotBytes,compactSnapshot:true,runningOnly:snapshot.scope==='running-now'&&snapshot.displayMode==='running-only',realCodexLiveSources:realLive,runningCards:snapshot.sessions.length,
  distinctIds:new Set(snapshot.sessions.map(s=>s.id)).size,statusCounts:snapshot.summary.statusCounts,htmlBytes:html.length,jsBytes:js.length,
- androidStreamFrames:streamFrames.length,androidStreamChanged:streamFrames.length>1,
+ androidStreamEvents:streamEvents.length,androidDeltaFrames:deltaFrames.length,androidCompactDelta:compactDelta,
  visualVerification:false,reason:'Phone reached the authenticated public HTTPS Funnel; Android browser UI navigation is outside the active Windows-only browser-control contract.'};
 fs.writeFileSync(path.join(root,'logs','android-network-proof.json'),JSON.stringify(report,null,2));
 console.log(JSON.stringify(report,null,2));

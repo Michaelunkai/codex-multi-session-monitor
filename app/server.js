@@ -9,7 +9,7 @@ const net = require('node:net');
 const { URL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 
-const SERVER_VERSION = '2.3.1';
+const SERVER_VERSION = '2.5.4';
 const DEFAULT_PORT = 8765;
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_LIVE_WINDOW_SECONDS = 20;
@@ -563,6 +563,8 @@ function classifyLiveSession(telemetry, now, config) {
   const liveWindowSeconds = Math.max(3, integer(config && config.liveWindowSeconds, DEFAULT_LIVE_WINDOW_SECONDS));
   const lastActivityMs = Math.max(integer(telemetry && telemetry.lastActivityMs), integer(telemetry && telemetry.rolloutMtimeMs));
   const ageSeconds = lastActivityMs ? Math.max(0, (now - lastActivityMs) / 1000) : Number.POSITIVE_INFINITY;
+  const rolloutMtimeMs = integer(telemetry && telemetry.rolloutMtimeMs);
+  const rolloutWriteAgeSeconds = rolloutMtimeMs ? Math.max(0, (now - rolloutMtimeMs) / 1000) : Number.POSITIVE_INFINITY;
   if (telemetry && telemetry.ipcDirect === true && telemetry.active && telemetry.turnId) {
     return {
       status: 'RUNNING',
@@ -576,7 +578,7 @@ function classifyLiveSession(telemetry, now, config) {
       elapsedSeconds: telemetry.startedAtMs ? Math.max(0, Math.round((now - telemetry.startedAtMs) / 100) / 10) : null
     };
   }
-  const eligible = Boolean(telemetry && telemetry.active && telemetry.turnId && lastActivityMs && ageSeconds <= liveWindowSeconds);
+  const eligible = Boolean(telemetry && telemetry.active && telemetry.turnId && rolloutMtimeMs && rolloutWriteAgeSeconds <= liveWindowSeconds);
   if (eligible) {
     return {
       status: 'RUNNING',
@@ -586,7 +588,7 @@ function classifyLiveSession(telemetry, now, config) {
       reason: 'Codex has an unfinished rollout turn with a fresh local event.',
       rawStatus: 'inProgress',
       lastActivityMs,
-      ageSeconds: Math.round(ageSeconds * 10) / 10,
+      ageSeconds: Math.round(rolloutWriteAgeSeconds * 10) / 10,
       elapsedSeconds: telemetry.startedAtMs ? Math.max(0, Math.round((now - telemetry.startedAtMs) / 100) / 10) : null
     };
   }
@@ -1008,6 +1010,40 @@ function extractIpcTelemetry(conversationState, options = {}) {
   };
 }
 
+function ipcTelemetryFingerprint(telemetry) {
+  const current = telemetry || {};
+  return JSON.stringify({
+    active: Boolean(current.active),
+    turnId: nonEmpty(current.turnId),
+    startedAtMs: integer(current.startedAtMs),
+    entries: (Array.isArray(current.entries) ? current.entries : []).map((entry) => ({
+      id: nonEmpty(entry && entry.id),
+      type: nonEmpty(entry && entry.type),
+      ordinal: integer(entry && entry.ordinal),
+      text: nonEmpty(entry && entry.text),
+      source: nonEmpty(entry && entry.source),
+      truncated: Boolean(entry && entry.truncated)
+    })),
+    activity: current.latestActivity ? {
+      kind: nonEmpty(current.latestActivity.kind),
+      label: nonEmpty(current.latestActivity.label),
+      detail: nonEmpty(current.latestActivity.detail),
+      ordinal: integer(current.latestActivity.ordinal),
+      source: nonEmpty(current.latestActivity.source)
+    } : null,
+    progress: current.progress || null
+  });
+}
+
+function stabilizeIpcTelemetry(nextTelemetry, previousTelemetry) {
+  if (!previousTelemetry || ipcTelemetryFingerprint(nextTelemetry) !== ipcTelemetryFingerprint(previousTelemetry)) return nextTelemetry;
+  return {
+    ...nextTelemetry,
+    lastActivityMs: integer(previousTelemetry.lastActivityMs),
+    latestActivity: previousTelemetry.latestActivity ? { ...previousTelemetry.latestActivity } : nextTelemetry.latestActivity
+  };
+}
+
 function createCodexIpcObserver(options = {}) {
   const endpoint = process.platform === 'win32' ? '\\\\.\\pipe\\codex-ipc' : path.join(process.env.XDG_RUNTIME_DIR || path.join(process.env.TMPDIR || '/tmp', 'codex-ipc'), 'ipc.sock');
   const onUpdate = typeof options.onUpdate === 'function' ? options.onUpdate : () => {};
@@ -1103,7 +1139,11 @@ function createCodexIpcObserver(options = {}) {
     const change = params.change || {};
     const receivedAtMs = Date.now();
     if (change.type === 'snapshot' && change.conversationState && typeof change.conversationState === 'object') {
-      const telemetry = extractIpcTelemetry(change.conversationState, { receivedAtMs, revision: change.revision });
+      const previous = states.get(threadId);
+      const telemetry = stabilizeIpcTelemetry(
+        extractIpcTelemetry(change.conversationState, { receivedAtMs, revision: change.revision }),
+        previous && previous.telemetry
+      );
       states.set(threadId, {
         state: change.conversationState,
         revision: integer(change.revision),
@@ -1126,7 +1166,10 @@ function createCodexIpcObserver(options = {}) {
       current.state = applyIpcPatches(current.state, change.patches);
       current.revision = integer(change.revision, current.revision + 1);
       current.lastEventMs = receivedAtMs;
-      current.telemetry = extractIpcTelemetry(current.state, { receivedAtMs, revision: current.revision });
+      current.telemetry = stabilizeIpcTelemetry(
+        extractIpcTelemetry(current.state, { receivedAtMs, revision: current.revision }),
+        current.telemetry
+      );
       lastEventMs = receivedAtMs;
       status.lastEventAt = safeIso(lastEventMs);
       changed();
@@ -1262,12 +1305,19 @@ function stableDigest(snapshot) {
     statusCounts: snapshot.summary && snapshot.summary.statusCounts,
     sessions: sessions.map((session) => ({
       id: session.id,
+      title: session.title,
+      sourceLabel: session.sourceLabel,
+      project: session.project,
+      cwd: session.cwd,
+      model: session.model,
       status: session.status,
+      statusReliability: session.statusReliability,
       lastActivityAt: session.lastActivityAt,
       latestTurnId: session.latestTurnId,
       outputDigest: session.outputDigest,
       outputChars: session.outputChars,
       outputTruncated: session.outputTruncated,
+      liveTransport: session.liveTransport,
       activity: session.activity && [
         session.activity.kind,
         session.activity.label,
@@ -1501,16 +1551,6 @@ function createLiveAdapter(config, syntheticFile = '', options = {}) {
           if (!parsed) continue;
           const item = { ...parsed, type: parsed.type || row.item_type };
           progressItems.push({ parsed: item });
-          const text = itemOutputText(item);
-          if (!text) continue;
-          insertLiveEntry(entries, makeLiveEntry(
-            item.type,
-            item.id,
-            integer(row.rollout_ordinal),
-            integer(row.created_at_ms),
-            text,
-            'thread_items'
-          ));
         }
       } catch (error) {
         lastErrors.push('thread_items read failed for ' + threadId);
@@ -1696,13 +1736,7 @@ function createLiveAdapter(config, syntheticFile = '', options = {}) {
     let persistedInProgressCount = 0;
     let activeRolloutCount = 0;
     let telemetryErrorCount = 0;
-    const inProgressThreadIds = [];
-    for (const row of stateRows) {
-      const turn = turnData.turns.get(String(row.id));
-      if (normalizeStatus(turn && turn.status) === 'inprogress') inProgressThreadIds.push(String(row.id));
-    }
     const ipcStatus = ipcObserver ? ipcObserver.getStatus() : null;
-    const recentLogActivities = queryRecentLogActivities(inProgressThreadIds, now);
     const desiredIpcThreadIds = [];
     for (const row of stateRows) {
       const id = String(row.id);
@@ -1751,11 +1785,6 @@ function createLiveAdapter(config, syntheticFile = '', options = {}) {
           telemetry.latestActivity = ipcTelemetry.latestActivity || telemetry.latestActivity;
         }
       }
-      const logActivity = recentLogActivities.get(id);
-      if (!telemetry.ipcDirect && telemetry.active && logActivity && logActivity.timestampMs >= integer(telemetry.lastActivityMs)) {
-        telemetry.lastActivityMs = logActivity.timestampMs;
-        telemetry.latestActivity = logActivity;
-      }
       const fallbackClassification = classifyLiveSession(telemetry, now, config);
       const recentPersistedTurn = normalizeStatus(turn && turn.status) === 'inprogress' &&
         meta.updatedAtMs > 0 && now - meta.updatedAtMs <= config.activeWindowSeconds * 1000;
@@ -1769,7 +1798,11 @@ function createLiveAdapter(config, syntheticFile = '', options = {}) {
       const classification = classifyLiveSession(telemetry, now, config);
       if (classification.status !== 'RUNNING') continue;
       const indexedTitle = indexMap.get(id);
-      const title = truncate(compactWhitespace(indexedTitle || meta.title), 180);
+      const displaySource = sourceLabel(meta.source, meta.threadSource, meta.agentNickname);
+      const storedTitle = truncate(compactWhitespace(indexedTitle || meta.title), 180);
+      const title = storedTitle === 'Untitled Codex session' && displaySource.startsWith('Codex subagent')
+        ? displaySource
+        : storedTitle;
       const liveTurnId = telemetry.turnId || (turn && turn.id) || null;
       const detail = queryDetail(id, liveTurnId, meta.rolloutPath, meta.updatedAtMs, telemetry, ipcTelemetry);
       const latestItem = detail.latestItem || null;
@@ -1777,7 +1810,7 @@ function createLiveAdapter(config, syntheticFile = '', options = {}) {
         id,
         title,
         source: meta.source || 'unknown',
-        sourceLabel: sourceLabel(meta.source, meta.threadSource, meta.agentNickname),
+        sourceLabel: displaySource,
         threadSource: meta.threadSource || 'unknown',
         model: truncate(meta.model, 80),
         cwd: meta.cwd || 'Unknown working directory',
@@ -1812,7 +1845,7 @@ function createLiveAdapter(config, syntheticFile = '', options = {}) {
         outputChars: detail.outputChars,
         outputTruncated: detail.outputTruncated,
         progress: detail.progress || null,
-        liveTransport: telemetry.ipcDirect ? 'codex-ipc' : 'rollout-fallback',
+        liveTransport: telemetry.ipcDirect ? 'codex-ipc' : 'codex-rollout-live',
         archived: false,
         synthetic: false,
         relevant: true
@@ -1849,7 +1882,7 @@ function createLiveAdapter(config, syntheticFile = '', options = {}) {
         liveWindowSeconds: config.liveWindowSeconds,
         pollMs: config.pollMs,
         displayMode: 'running-only',
-        outputTransport: 'Codex Desktop IPC live stream + read-only rollout fallback',
+        outputTransport: 'Codex Desktop IPC + append-only Codex rollout live streams',
         liveTransport: ipcStatus || {
           available: false,
           connected: false,
@@ -1879,6 +1912,15 @@ function createLiveAdapter(config, syntheticFile = '', options = {}) {
   };
 }
 
+function publicSession(session) {
+  const value = { ...session };
+  if (value.latestItem && typeof value.latestItem === 'object') {
+    value.latestItem = { ...value.latestItem };
+    delete value.latestItem.text;
+  }
+  return value;
+}
+
 function publicSnapshot(internal, scope) {
   return {
     schemaVersion: internal.schemaVersion,
@@ -1888,7 +1930,125 @@ function publicSnapshot(internal, scope) {
     displayMode: 'running-only',
     generatedAt: internal.generatedAt,
     summary: internal.summary,
-    sessions: internal.sessions || []
+    sessions: (internal.sessions || []).map(publicSession)
+  };
+}
+
+function outputEntryKey(entry, index) {
+  const id = nonEmpty(entry && entry.id);
+  return id ? 'id:' + id : 'ordinal:' + String(integer(entry && entry.ordinal)) + ':' + String(index);
+}
+
+function outputEntryMetadata(entry) {
+  const value = { ...(entry || {}) };
+  delete value.text;
+  // IPC snapshots can stamp the same in-progress entry on every poll. The
+  // transcript time is the first visible event time; changing it alone is not
+  // a new word or a visual change worth rewriting across the live wall.
+  delete value.at;
+  delete value.timestampMs;
+  return value;
+}
+
+function outputDelta(previousEntries, nextEntries) {
+  const previous = Array.isArray(previousEntries) ? previousEntries : [];
+  const next = Array.isArray(nextEntries) ? nextEntries : [];
+  const previousByKey = new Map();
+  const nextKeys = new Set();
+  for (let index = 0; index < previous.length; index += 1) {
+    const key = outputEntryKey(previous[index], index);
+    if (previousByKey.has(key)) return { mode: 'replace', entries: next };
+    previousByKey.set(key, previous[index]);
+  }
+  const upserts = [];
+  for (let index = 0; index < next.length; index += 1) {
+    const entry = next[index];
+    const key = outputEntryKey(entry, index);
+    if (nextKeys.has(key)) return { mode: 'replace', entries: next };
+    nextKeys.add(key);
+    const old = previousByKey.get(key);
+    if (!old) {
+      upserts.push({ ...entry });
+      continue;
+    }
+    const beforeText = String(old.text || '');
+    const afterText = String(entry.text || '');
+    if (afterText.startsWith(beforeText) && afterText.length > beforeText.length) {
+      const append = { ...entry, appendText: afterText.slice(beforeText.length) };
+      delete append.text;
+      upserts.push(append);
+      continue;
+    }
+    if (afterText === beforeText) {
+      if (JSON.stringify(outputEntryMetadata(old)) !== JSON.stringify(outputEntryMetadata(entry))) {
+        const metadata = { ...entry, keepText: true };
+        delete metadata.text;
+        upserts.push(metadata);
+      }
+      continue;
+    }
+    upserts.push({ ...entry });
+  }
+  const removedIds = [];
+  for (let index = 0; index < previous.length; index += 1) {
+    const key = outputEntryKey(previous[index], index);
+    if (!nextKeys.has(key)) removedIds.push(key);
+  }
+  if (!upserts.length && !removedIds.length) return null;
+  return { mode: 'patch', upserts, removedIds };
+}
+
+function sessionMetadata(session) {
+  const value = publicSession(session);
+  delete value.liveOutput;
+  return value;
+}
+
+function sessionDeltaMetadata(session) {
+  const value = sessionMetadata(session);
+  // The browser advances these elapsed values locally once per second. Sending
+  // them on every unrelated output event would make every card look changed.
+  delete value.lastActivityAgeSeconds;
+  delete value.elapsedSeconds;
+  return value;
+}
+
+function buildSnapshotDelta(previousInternal, nextInternal, baseRevision, revision) {
+  const previousSessions = Array.isArray(previousInternal && previousInternal.sessions) ? previousInternal.sessions : [];
+  const nextSessions = Array.isArray(nextInternal && nextInternal.sessions) ? nextInternal.sessions : [];
+  const previousById = new Map(previousSessions.map((session) => [String(session.id), session]));
+  const nextIds = new Set();
+  const added = [];
+  const updated = [];
+  for (const session of nextSessions) {
+    const id = String(session.id);
+    nextIds.add(id);
+    const before = previousById.get(id);
+    if (!before) {
+      added.push(publicSession(session));
+      continue;
+    }
+    const beforeMetadata = sessionDeltaMetadata(before);
+    const afterMetadata = sessionDeltaMetadata(session);
+    const output = outputDelta(before.liveOutput, session.liveOutput);
+    if (JSON.stringify(beforeMetadata) !== JSON.stringify(afterMetadata) || output) {
+      updated.push({ id, session: afterMetadata, output });
+    }
+  }
+  const removedIds = previousSessions.map((session) => String(session.id)).filter((id) => !nextIds.has(id));
+  return {
+    schemaVersion: 1,
+    type: 'delta',
+    baseRevision,
+    revision,
+    generatedAt: nextInternal.generatedAt,
+    source: nextInternal.source,
+    scope: 'running-now',
+    displayMode: 'running-only',
+    summary: nextInternal.summary,
+    added,
+    updated,
+    removedIds
   };
 }
 
@@ -2035,6 +2195,8 @@ function startServer(options = {}) {
   ensureDirectory(path.join(root, 'data'));
   let lastInternal = null;
   let lastSignature = '';
+  let snapshotRevision = 0;
+  let lastEmittedInternal = null;
   let cacheAt = 0;
   let server;
   let pollTimer;
@@ -2063,7 +2225,55 @@ function startServer(options = {}) {
 
   function getSnapshot(scope = 'relevant', compact = false) {
     const internal = getInternal();
-    return compact ? compactPublicSnapshot(internal, scope) : publicSnapshot(internal, scope);
+    const snapshot = compact ? compactPublicSnapshot(internal, scope) : publicSnapshot(internal, scope);
+    return { ...snapshot, revision: snapshotRevision };
+  }
+
+  function sendSubscriberPayload(subscriber, payload) {
+    if (!subscribers.has(subscriber)) return;
+    // A client may stop consuming while its TCP receive buffer still accepts
+    // writes. Retain only one server-side payload while Node reports
+    // backpressure, and use revision-only SSE for current clients so repeat
+    // updates never queue another complete transcript.
+    if (subscriber.backpressured) {
+      subscriber.pendingPayload = payload;
+      return;
+    }
+    try {
+      const accepted = subscriber.response.write('event: ' + payload.event + '\ndata: ' + JSON.stringify(payload.body) + '\n\n');
+      if (accepted) return;
+      subscriber.backpressured = true;
+      subscriber.response.once('drain', () => {
+        if (!subscribers.has(subscriber)) return;
+        subscriber.backpressured = false;
+        const pendingPayload = subscriber.pendingPayload;
+        subscriber.pendingPayload = null;
+        if (!pendingPayload) return;
+        setTimeout(() => {
+          try { sendSubscriberPayload(subscriber, pendingPayload); } catch { subscribers.delete(subscriber); }
+        }, 0);
+      });
+    } catch {
+      subscribers.delete(subscriber);
+    }
+  }
+
+  function sendSubscriberSnapshot(subscriber, internal) {
+    const snapshot = subscriber.compact
+      ? compactPublicSnapshot(internal, subscriber.scope)
+      : publicSnapshot(internal, subscriber.scope);
+    sendSubscriberPayload(subscriber, { event: 'snapshot', body: { ...snapshot, revision: snapshotRevision } });
+  }
+
+  function sendSubscriberRevision(subscriber, internal) {
+    sendSubscriberPayload(subscriber, {
+      event: 'changed',
+      body: { revision: snapshotRevision, generatedAt: internal.generatedAt }
+    });
+  }
+
+  function sendSubscriberDelta(subscriber, delta) {
+    sendSubscriberPayload(subscriber, { event: 'delta', body: delta });
   }
 
   function emitSnapshot(force = false) {
@@ -2071,16 +2281,19 @@ function startServer(options = {}) {
     const signature = stableDigest(internal);
     if (!force && signature === lastSignature) return;
     lastSignature = signature;
+    const previousInternal = lastEmittedInternal;
+    const baseRevision = snapshotRevision;
+    snapshotRevision += 1;
+    const delta = previousInternal
+      ? buildSnapshotDelta(previousInternal, internal, baseRevision, snapshotRevision)
+      : null;
+    lastEmittedInternal = internal;
     for (const subscriber of subscribers) {
-      try {
-        subscriber.response.write('event: snapshot\n');
-        const snapshot = subscriber.compact
-          ? compactPublicSnapshot(internal, subscriber.scope)
-          : publicSnapshot(internal, subscriber.scope);
-        subscriber.response.write('data: ' + JSON.stringify(snapshot) + '\n\n');
-      } catch {
-        subscribers.delete(subscriber);
-      }
+      if (subscriber.mode === 'delta') {
+        if (delta) sendSubscriberDelta(subscriber, delta);
+        else sendSubscriberRevision(subscriber, internal);
+      } else if (subscriber.mode === 'revision') sendSubscriberRevision(subscriber, internal);
+      else sendSubscriberSnapshot(subscriber, internal);
     }
   }
 
@@ -2175,14 +2388,19 @@ function startServer(options = {}) {
         Connection: 'keep-alive',
         'X-Accel-Buffering': 'no'
       });
-      response.write('retry: 3000\n');
-      response.write('event: snapshot\n');
+      response.write('retry: 1000\n');
       const scope = url.searchParams.get('scope') === 'all' ? 'all' : 'relevant';
       const compact = url.searchParams.get('compact') === '1';
-      response.write('data: ' + JSON.stringify(getSnapshot(scope, compact)) + '\n\n');
-      const subscriber = { response, scope, compact };
+      const requestedMode = url.searchParams.get('mode');
+      const mode = requestedMode === 'delta' ? 'delta' : requestedMode === 'revision' ? 'revision' : 'snapshot';
+      const subscriber = { response, scope, compact, mode, backpressured: false, pendingPayload: null };
       subscribers.add(subscriber);
-      request.on('close', () => subscribers.delete(subscriber));
+      const removeSubscriber = () => subscribers.delete(subscriber);
+      request.on('close', removeSubscriber);
+      response.on('close', removeSubscriber);
+      response.on('error', removeSubscriber);
+      if (mode === 'revision' || mode === 'delta') sendSubscriberRevision(subscriber, getInternal());
+      else sendSubscriberSnapshot(subscriber, getInternal());
       return;
     }
     jsonResponse(response, 404, { error: 'Not found.' });
@@ -2219,6 +2437,7 @@ function startServer(options = {}) {
       pollTimer.unref();
       heartbeatTimer = setInterval(() => {
         for (const subscriber of subscribers) {
+          if (subscriber.backpressured) continue;
           try { subscriber.response.write(': heartbeat\n\n'); } catch { subscribers.delete(subscriber); }
         }
       }, 15000);
@@ -2292,6 +2511,7 @@ module.exports = {
   createRolloutTracker,
   applyIpcPatches,
   extractIpcTelemetry,
+  stabilizeIpcTelemetry,
   redactExact,
   createLiveAdapter,
   itemPreview,

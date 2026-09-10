@@ -13,15 +13,17 @@ const root = path.resolve(__dirname, '..');
 test('running-only UI renders 12 simultaneous live transcripts and applies an automatic stream update', async () => {
   const { document, Event } = parseHTML(fs.readFileSync(path.join(root, 'app/public/index.html'), 'utf8'));
   const adapter = createLiveAdapter(normalizeConfig({}, root), path.join(__dirname, 'fixtures/synthetic-12.json'));
-  const snapshot = adapter.snapshot();
+  let snapshot = adapter.snapshot();
   const base = snapshot.sessions[0];
   const longText = 'complete live output '.repeat(40).trim();
   snapshot.scope = 'running-now';
   snapshot.displayMode = 'running-only';
+  snapshot.revision = 1;
   snapshot.sessions = Array.from({ length: 12 }, (_, index) => ({
     ...base,
     id: 'synthetic-live-' + String(index + 1).padStart(2, '0'),
     title: 'Live session ' + (index + 1),
+    liveTransport: index === 1 ? 'codex-rollout-live' : 'codex-ipc',
     liveOutput: [{ id: 'entry-' + index, type: 'assistant', ordinal: 1, at: new Date().toISOString(), text: index === 0 ? longText : 'stream ' + (index + 1) }],
     latestItem: { type: 'assistant', preview: index === 0 ? longText.slice(0, 320) : 'stream ' + (index + 1), text: index === 0 ? longText : 'stream ' + (index + 1), at: new Date().toISOString() },
     outputDigest: 'digest-' + index,
@@ -32,6 +34,7 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
 
   const streams = [];
   let copied = '';
+  let fetchCount = 0;
   class FakeEventSource {
     constructor(url) { this.url = url; this.listeners = {}; streams.push(this); }
     addEventListener(name, fn) { this.listeners[name] = fn; }
@@ -48,7 +51,7 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
     document, window, EventSource: FakeEventSource, URLSearchParams, console, Set, Date, encodeURIComponent,
     setInterval() { return 1; }, clearInterval() {}, setTimeout() { return 1; }, clearTimeout() {},
     navigator: { clipboard: { writeText: async (value) => { copied = value; } } },
-    fetch: async () => ({ ok: true, json: async () => snapshot })
+    fetch: async () => { fetchCount += 1; return { ok: true, json: async () => snapshot }; }
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
   document.dispatchEvent(new Event('DOMContentLoaded'));
@@ -61,20 +64,44 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .live-transcript').textContent, /complete live output/);
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .live-activity').textContent, /Synthetic live event/);
+  assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .transcript-state').textContent, /LIVE DESKTOP IPC · updating now/);
+  assert.match(document.querySelector('[data-session-id="synthetic-live-02"] .transcript-state').textContent, /LIVE CODEX ROLLOUT · updating now/);
+  assert.doesNotMatch(document.querySelector('[data-session-id="synthetic-live-02"] .transcript-state').textContent, /fallback|waiting/i);
   assert.equal(document.querySelectorAll('.transcript-entry').length, 12);
+  assert.match(streams[0].url, /\/events\?mode=delta&token=test-token$/);
   document.querySelector('#copyButton').dispatchEvent(new Event('click'));
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(copied, /^https:\/\/michaelunkai\.github\.io\/codex-multi-session-monitor-pages\/#token=test-token&endpoint=https%3A%2F%2Fcodex-monitor\.tail5cbd67\.ts\.net$/);
 
-  const changed = structuredClone(snapshot);
-  changed.sessions[0].liveOutput = [{ id: 'entry-0', type: 'assistant', ordinal: 2, at: new Date().toISOString(), text: 'word-by-word stream update' }];
-  changed.sessions[0].latestItem.text = 'word-by-word stream update';
-  changed.sessions[0].latestItem.preview = 'word-by-word stream update';
-  changed.sessions[0].outputDigest = 'changed-digest';
-  changed.sessions[0].activity = { kind: 'assistant-delta', label: 'Codex output is streaming', detail: '', at: new Date().toISOString(), timestampMs: Date.now(), ordinal: 2, source: 'rollout' };
-  streams[0].listeners.snapshot({ data: JSON.stringify(changed) });
+  const originalTextNode = document.querySelector('[data-session-id="synthetic-live-01"] .transcript-text');
+  const changedSession = structuredClone(snapshot.sessions[0]);
+  const changedActivityAt = new Date(Date.now() + 1000).toISOString();
+  changedSession.outputDigest = 'changed-digest';
+  changedSession.outputChars += ' word-by-word stream update'.length;
+  changedSession.lastActivityAt = changedActivityAt;
+  changedSession.latestTurnStartedAt = new Date(Date.now() - 61000).toISOString();
+  changedSession.activity = { kind: 'assistant-delta', label: 'Codex output is streaming', detail: '', at: changedActivityAt, timestampMs: Date.now(), ordinal: 2, source: 'codex-ipc' };
+  delete changedSession.liveOutput;
+  delete changedSession.latestItem.text;
+  delete changedSession.lastActivityAgeSeconds;
+  delete changedSession.elapsedSeconds;
+  streams[0].listeners.delta({ data: JSON.stringify({
+    type: 'delta', baseRevision: 1, revision: 2, generatedAt: new Date().toISOString(), source: snapshot.source,
+    scope: 'running-now', displayMode: 'running-only', summary: snapshot.summary, added: [], removedIds: [],
+    updated: [{ id: 'synthetic-live-01', session: changedSession, output: { mode: 'patch', removedIds: [], upserts: [{ id: 'entry-0', type: 'assistant', ordinal: 1, at: new Date().toISOString(), appendText: ' word-by-word stream update', source: 'codex-ipc' }] } }]
+  }) });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(document.querySelector('[data-session-id="synthetic-live-01"] .transcript-text'), originalTextNode);
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"]').textContent, /word-by-word stream update/);
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .live-activity').textContent, /Codex output is streaming/);
+  assert.equal(document.querySelector('[data-session-id="synthetic-live-01"] .metric-value').dataset.activityAt, changedActivityAt, 'delta metadata must refresh the local age clock');
+  assert.equal(fetchCount, 1, 'a compact delta must not cause another full-wall fetch');
+  streams[0].listeners.delta({ data: JSON.stringify({
+    type: 'delta', baseRevision: 2, revision: 3, generatedAt: new Date().toISOString(), source: snapshot.source,
+    scope: 'running-now', displayMode: 'running-only', summary: { ...snapshot.summary, runningCount: 11, relevantCount: 11 }, added: [], updated: [], removedIds: ['synthetic-live-12']
+  }) });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(document.querySelectorAll('.session-card').length, 11);
   adapter.close();
 });
 
@@ -132,7 +159,7 @@ test('hosted shell accepts the private PC access URL and targets the live PC ori
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(requests[0].url, /^https:\/\/192\.168\.1\.129:8766\/api\/snapshot\?token=remote-test-token$/);
   assert.equal(requests[0].options.headers.Authorization, 'Bearer remote-test-token');
-  assert.match(streams[0].url, /^https:\/\/192\.168\.1\.129:8766\/events\?token=remote-test-token$/);
+  assert.match(streams[0].url, /^https:\/\/192\.168\.1\.129:8766\/events\?mode=delta&token=remote-test-token$/);
   assert.equal(document.querySelectorAll('.session-card').length, 12);
   adapter.close();
 });
@@ -174,7 +201,7 @@ test('same-origin PC wall connects without a bearer link while remote shell stay
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
   assert.equal(requests[0].url, 'http://127.0.0.1:8766/api/snapshot');
   assert.equal(requests[0].options.headers, undefined);
-  assert.equal(streams[0].url, 'http://127.0.0.1:8766/events');
+  assert.equal(streams[0].url, 'http://127.0.0.1:8766/events?mode=delta');
   assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
   adapter.close();
 });
@@ -223,7 +250,7 @@ test('published wall auto-connects to the local PC before asking remote devices 
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
   assert.equal(requests[0].url, 'http://127.0.0.1:8766/api/snapshot');
   assert.equal(requests[0].options.headers, undefined);
-  assert.equal(streams[0].url, 'http://127.0.0.1:8766/events');
+  assert.equal(streams[0].url, 'http://127.0.0.1:8766/events?mode=delta');
   assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
   adapter.close();
 });
@@ -271,7 +298,7 @@ test('published wall keeps retrying the local PC after a transient monitor resta
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
   assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
   assert.equal(streams.length, 1);
-  assert.match(streams[0].url, /^http:\/\/127\.0\.0\.1:8766\/events$/);
+  assert.match(streams[0].url, /^http:\/\/127\.0\.0\.1:8766\/events\?mode=delta$/);
   adapter.close();
 });
 

@@ -1,24 +1,58 @@
 [CmdletBinding()]
 param()
-$ErrorActionPreference='Stop'
-$root=Split-Path -Parent $PSScriptRoot
-$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$node=Join-Path $root 'runtime\node\node.exe'
-$supervisor=Join-Path $PSScriptRoot 'supervisor.js'
-$xmlPath=Join-Path $root 'config\autostart-task.xml'
-$xml=@"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>Private read-only Codex dashboard. All software and logs are on F:. Remove with DISABLE-AUTOSTART.ps1.</Description></RegistrationInfo>
-  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>$sid</UserId><Delay>PT5S</Delay></LogonTrigger></Triggers>
-  <Principals><Principal id="Author"><UserId>$sid</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
-  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings>
-  <Actions Context="Author"><Exec><Command>$node</Command><Arguments>&quot;$supervisor&quot; --logon</Arguments><WorkingDirectory>$root</WorkingDirectory></Exec></Actions>
-</Task>
-"@
-[IO.File]::WriteAllText($xmlPath,$xml,[Text.Encoding]::Unicode)
-$scheduler=Join-Path $env:WINDIR 'System32\schtasks.exe'
-& $scheduler /Create /TN 'Codex-MultiSession-Monitor' /XML $xmlPath /F
-if($LASTEXITCODE -ne 0){throw 'Task registration failed.'}
-& $scheduler /Run /TN 'Codex-MultiSession-Monitor'
-if($LASTEXITCODE -ne 0){throw 'Registered task could not start.'}
+
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+$runKey = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
+$valueName = 'Codex-MultiSession-Monitor'
+$wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+$cscript = Join-Path $env:WINDIR 'System32\cscript.exe'
+$launcher = Join-Path $PSScriptRoot 'AUTOSTART.vbs'
+$legacyTaskFile = Join-Path $root 'config\autostart-task.xml'
+$receiptFile = Join-Path $root 'config\autostart-run.json'
+
+if (-not (Test-Path -LiteralPath $wscript)) { throw ('Windows Script Host missing: ' + $wscript) }
+if (-not (Test-Path -LiteralPath $cscript)) { throw ('Windows Script Host console runner missing: ' + $cscript) }
+if (-not (Test-Path -LiteralPath $launcher)) { throw ('Detached automatic-start launcher missing: ' + $launcher) }
+
+function Remove-ProjectLegacyTask {
+    $scheduler = Join-Path $env:WINDIR 'System32\schtasks.exe'
+    $taskXml = @(& $scheduler /Query /TN $valueName /XML 2>$null) -join [Environment]::NewLine
+    if ($LASTEXITCODE -ne 0) { return }
+    if ($taskXml -notmatch [regex]::Escape($root)) {
+        throw 'A same-named scheduled task is not owned by this project; refusing to remove it.'
+    }
+    & $scheduler /End /TN $valueName 2>$null | Out-Null
+    & $scheduler /Delete /TN $valueName /F 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not remove the project-owned legacy scheduled task.' }
+}
+
+$command = '"' + $wscript + '" //B //Nologo "' + $launcher + '"'
+New-Item -Path $runKey -Force | Out-Null
+New-ItemProperty -Path $runKey -Name $valueName -PropertyType String -Value $command -Force | Out-Null
+
+Remove-ProjectLegacyTask
+if (Test-Path -LiteralPath $legacyTaskFile) { Remove-Item -LiteralPath $legacyTaskFile -Force }
+$receipt = [pscustomobject]@{
+    registryPath = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
+    valueName = $valueName
+    command = $command
+    updatedAt = (Get-Date).ToUniversalTime().ToString('o')
+}
+[IO.File]::WriteAllText($receiptFile, ($receipt | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+
+& $cscript //Nologo $launcher
+if ($LASTEXITCODE -ne 0) { throw 'Automatic-start registration succeeded but the detached launcher did not start.' }
+
+$statusScript = Join-Path $PSScriptRoot 'STATUS.ps1'
+$ready = $false
+for ($attempt = 1; $attempt -le 45; $attempt++) {
+    $status = @(& (Join-Path $root 'runtime\powershell\pwsh.exe') -NoLogo -NoProfile -File $statusScript 2>&1) -join [Environment]::NewLine
+    if ($status -match 'Running\s*:\s*True' -and $status -match 'Supervisor\s*:\s*True' -and $status -match 'PrivateBridgeLoggedIn\s*:\s*True') {
+        $ready = $true
+        break
+    }
+    Start-Sleep -Seconds 1
+}
+if (-not $ready) { throw 'Automatic-start registration succeeded but the detached monitor stack did not become healthy.' }
+Write-Output 'Automatic startup is registered in the current-user Run key and launches the F:-resident detached START wrapper.'

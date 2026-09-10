@@ -52,18 +52,76 @@ function framesDiffer(left, right) {
   return Boolean(left && right && JSON.stringify(left.sessions) !== JSON.stringify(right.sessions));
 }
 
+function assertLiveSource(session) {
+  assert.equal(session.status, 'RUNNING');
+  assert.ok(Array.isArray(session.liveOutput));
+  assert.ok(session.activity && session.activity.label && session.activity.at);
+  if (session.liveTransport === 'codex-ipc') {
+    assert.equal(session.activity.source, 'codex-ipc', 'IPC card activity must come from the Desktop IPC stream');
+    assert.equal(session.liveOutput.every((entry) => entry.source === 'codex-ipc'), true, 'IPC card output must come from the Desktop IPC stream');
+    return { id: session.id, transport: 'codex-ipc', exact: true };
+  }
+  assert.equal(session.liveTransport, 'codex-rollout-live', 'a non-IPC card must be an append-only live Codex rollout');
+  assert.ok(session.sessionPath, 'a rollout-live card must name its Codex rollout file');
+  const stat = fs.statSync(session.sessionPath);
+  assert.ok(Date.now() - stat.mtimeMs <= (cfg.liveWindowSeconds + 5) * 1000, 'a rollout-live card must have a fresh local write');
+  const rollout = parseLiveRollout(fs.readFileSync(session.sessionPath, 'utf8'), { now: Date.now() });
+  assert.equal(rollout.active, true, 'a rollout-live card must have an unfinished local task');
+  assert.equal(rollout.turnId, session.latestTurnId, 'a rollout-live card must match the active local turn');
+  assert.equal(session.activity.source, 'rollout', 'rollout-live card activity must come from its local rollout');
+  assert.equal(session.liveOutput.every((entry) => entry.source === 'rollout'), true, 'rollout-live card output must be copied only from its local rollout');
+  assert.equal(session.liveOutput.every((entry) => rollout.entries.some((source) => source.text === entry.text)), true, 'rollout-live card output must exactly match its Codex rollout');
+  return { id: session.id, transport: 'codex-rollout-live', exact: true };
+}
+
 function streamProof() {
   return new Promise((resolve, reject) => {
     const seen = [];
     let pending = '';
     let request;
+    let fetching = false;
+    let queuedRevision = 0;
+    let fetchedRevision = 0;
+    let finished = false;
     let meaningfulChange = false;
-    const finish = () => {
+    let deltaEvents = 0;
+    let maxDeltaBytes = 0;
+    const finish = (error) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
       if (request) request.destroy();
-      resolve({ frames: seen.length, changed: seen.length > 1, meaningfulChange, first: seen[0] || null, latest: seen.at(-1) || null });
+      if (error) reject(error);
+      else resolve({ frames: seen.length, changed: deltaEvents > 0 && meaningfulChange, meaningfulChange, deltaEvents, maxDeltaBytes, first: seen[0] || null, latest: seen.at(-1) || null });
     };
     const timer = setTimeout(finish, 22000);
-    request = transport.get({ ...options, path: '/events' }, (response) => {
+    const refresh = async (revision) => {
+      if (finished) return;
+      if (fetching) { queuedRevision = Math.max(queuedRevision, revision); return; }
+      fetching = true;
+      try {
+        const result = await get('/api/snapshot?scope=all');
+        assert.equal(result.status, 200);
+        const snapshot = JSON.parse(result.body);
+        assert.equal(snapshot.scope, 'running-now');
+        assert.equal(snapshot.sessions.every((session) => session.status === 'RUNNING'), true);
+        const frame = { revision: snapshot.revision, ...summarizeFrame(snapshot) };
+        if (framesDiffer(seen.at(-1), frame)) meaningfulChange = true;
+        seen.push(frame);
+        fetchedRevision = Math.max(fetchedRevision, Number(snapshot.revision) || revision);
+        if (meaningfulChange && deltaEvents > 0) finish();
+      } catch (error) {
+        finish(error);
+      } finally {
+        fetching = false;
+        if (!finished && queuedRevision > fetchedRevision) {
+          const next = queuedRevision;
+          queuedRevision = 0;
+          refresh(next);
+        }
+      }
+    };
+    request = transport.get({ ...options, path: '/events?mode=delta' }, (response) => {
       response.setEncoding('utf8');
       response.on('data', (chunk) => {
         pending += chunk;
@@ -71,30 +129,38 @@ function streamProof() {
         while ((end = pending.indexOf('\n\n')) >= 0) {
           const frame = pending.slice(0, end);
           pending = pending.slice(end + 2);
+          const event = frame.split('\n').find((value) => value.startsWith('event: '));
           const line = frame.split('\n').find((value) => value.startsWith('data: '));
-          if (!line) continue;
+          if (!event || !line) continue;
           try {
-            const snapshot = JSON.parse(line.slice(6));
-            assert.equal(snapshot.scope, 'running-now');
-            assert.equal(snapshot.sessions.every((session) => session.status === 'RUNNING'), true);
-            const frame = summarizeFrame(snapshot);
-            if (framesDiffer(seen.at(-1), frame)) meaningfulChange = true;
-            seen.push(frame);
-            if (meaningfulChange) {
-              clearTimeout(timer);
-              finish();
-              return;
+            const payload = JSON.parse(line.slice(6));
+            if (event === 'event: changed') {
+              assert.equal(Number.isInteger(payload.revision), true);
+              if (payload.revision > fetchedRevision) refresh(payload.revision);
+              continue;
             }
+            if (event !== 'event: delta') continue;
+            assert.equal(payload.type, 'delta');
+            assert.equal(Number.isInteger(payload.baseRevision), true);
+            assert.equal(Number.isInteger(payload.revision), true);
+            assert.equal(payload.revision, payload.baseRevision + 1);
+            assert.equal(Array.isArray(payload.added), true);
+            assert.equal(Array.isArray(payload.updated), true);
+            assert.equal(Array.isArray(payload.removedIds), true);
+            assert.equal(payload.updated.every((update) => update.session && !Object.hasOwn(update.session, 'liveOutput')), true, 'delta metadata must not repeat a full transcript');
+            deltaEvents += 1;
+            maxDeltaBytes = Math.max(maxDeltaBytes, Buffer.byteLength(frame));
+            if (payload.added.length || payload.updated.length || payload.removedIds.length) meaningfulChange = true;
+            if (payload.revision > fetchedRevision) refresh(payload.revision);
+            else if (meaningfulChange && seen.length) finish();
           } catch (error) {
-            clearTimeout(timer);
-            if (request) request.destroy();
-            reject(error);
+            finish(error);
             return;
           }
         }
       });
     });
-    request.on('error', (error) => { clearTimeout(timer); reject(error); });
+    request.on('error', (error) => { if (!finished) finish(error); });
   });
 }
 
@@ -131,15 +197,13 @@ function streamProof() {
   assert.equal(new Set(live.sessions.map((session) => session.id)).size, live.sessions.length);
   assert.equal(live.sessions.every((session) => session.status === 'RUNNING'), true);
   assert.equal(live.sessions.every((session) => Array.isArray(session.liveOutput)), true);
-  assert.equal(live.sessions.every((session) => session.liveTransport === 'codex-ipc'), true, 'every live card must come from the direct Codex Desktop stream');
-  assert.equal(live.sessions.every((session) => session.liveOutput.every((entry) => entry.source === 'codex-ipc')), true, 'every displayed entry must be sourced from the direct Codex Desktop stream');
-  assert.equal(live.sessions.every((session) => session.activity && session.activity.source === 'codex-ipc'), true, 'every displayed activity must be sourced from the direct Codex Desktop stream');
-  assert.equal(live.sessions.every((session) => session.activity && session.activity.label && session.activity.at), true);
+  const sourceProofs = live.sessions.map(assertLiveSource);
+  assert.equal(sourceProofs.every((proof) => proof.exact), true, 'every card must be backed by an exact live Codex source');
   assert.match(results[5].body, /Live wall/);
   assert.match(results[6].body, /renderTranscript/);
   assert.match(results[7].body, /\.live-transcript/);
-  const current = live.sessions.find((session) => session.id === '01a08737-04b6-7143-832f-25e6c32126c1');
-  assert.ok(current, 'current Codex monitor task must be visible as a live card');
+  const current = live.sessions.find((session) => session.liveTransport === 'codex-ipc' && session.sessionPath && session.liveOutput.length > 0);
+  assert.ok(current, 'at least one direct Codex live card with durable output must be visible');
   assert.ok(current.liveOutput.length > 0, 'current live card must expose durable output');
   assert.ok(current.activity && current.activity.label, 'current live card must expose current activity');
   const currentRollout = parseLiveRollout(fs.readFileSync(current.sessionPath, 'utf8'), { now: Date.now() });
@@ -151,7 +215,7 @@ function streamProof() {
     : current.liveOutput.some((entry) => entry.text.length > 320);
   assert.equal(exactOutputMatch, true, 'dashboard must preserve complete durable output text');
   const stream = await streamProof();
-  assert.equal(stream.changed, true, 'authenticated SSE must deliver an automatic changed snapshot');
+  assert.equal(stream.changed, true, 'authenticated SSE must deliver an automatic compact live delta');
   const streamContentChanged = stream.meaningfulChange;
   assert.equal(streamContentChanged, true, 'automatic SSE proof must include a changed per-session activity or output payload');
   const report = {
@@ -171,12 +235,15 @@ function streamProof() {
       initialized: live.summary.liveTransport.initialized,
       followingCount: live.summary.liveTransport.followingCount,
       liveStateCount: live.summary.liveTransport.liveStateCount,
-      directCards: live.sessions.filter((session) => session.liveTransport === 'codex-ipc').length
+      directCards: live.sessions.filter((session) => session.liveTransport === 'codex-ipc').length,
+      rolloutLiveCards: live.sessions.filter((session) => session.liveTransport === 'codex-rollout-live').length
     },
+    exactLiveSources: sourceProofs,
     currentTask: { id: current.id, status: current.status, turnId: current.latestTurnId, activity: current.activity, outputEntries: current.liveOutput.length, outputChars: current.outputChars },
     exactDurableOutputMatch: exactOutputMatch,
     assets: results.slice(5).map((result) => ({ status: result.status, bytes: result.body.length })),
     stream,
+    sseMode: 'initial full snapshot plus compact ordered per-card delta',
     streamActivityChanged: stream.meaningfulChange,
     streamContentChanged,
     readErrors: health.summary.readErrors,
