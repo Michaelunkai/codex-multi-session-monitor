@@ -44,9 +44,10 @@ The adapter opens these existing Codex files read-only:
 - `C:\Users\micha\.codex\state_5.sqlite`: non-archived thread metadata, title, project/working directory, model, timestamps, and rollout path.
 - `C:\Users\micha\.codex\thread_history_1.sqlite`: thread/turn metadata and durable item fallback.
 - `C:\Users\micha\.codex\session_index.jsonl`: official renamed titles when present.
+- `C:\Users\micha\.codex\logs_2.sqlite`: optional per-thread fresh activity events used to extend live freshness when a current turn is already marked in progress.
 - The referenced rollout JSONL files under `C:\Users\micha\.codex\sessions`: live task and output events.
 
-No Codex file is written, copied, relocated, or opened for exclusive access. Existing paths outside F: are source inputs only.
+No Codex file is written, copied, relocated, or opened for exclusive access. Existing paths outside F: are source inputs only. The diagnostic log fallback can identify fresh activity labels but does not contain the message/command delta payloads and cannot make a historical or completed thread RUNNING by itself.
 
 ## Start, stop, status, and restart
 
