@@ -44,3 +44,9 @@ test('automatic startup uses a direct F-resident Run value and retires only the 
   assert.match(detachedLauncher, /runtime\\powershell\\pwsh\.exe/);
   assert.match(detachedLauncher, /START\.ps1/);
 });
+
+test('supervisor keeps polling after an unexpected loop exception', () => {
+  const supervisor = fs.readFileSync(path.join(root, 'scripts', 'supervisor.js'), 'utf8');
+  assert.match(supervisor, /Supervisor loop error/);
+  assert.match(supervisor, /while\s*\(!fs\.existsSync\(stopFile\)\)/);
+});

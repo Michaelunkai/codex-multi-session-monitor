@@ -94,29 +94,35 @@ async function main(){
     let nextBridgeCheck=0;
     let lastBridgeResult='';
     while(!fs.existsSync(stopFile)){
-      const monitorHealthy=await health();
-      if(monitorHealthy){
-        failures=0;
-        if(Date.now()>=nextBridgeCheck){
-          let port=0;
-          try { port=Number(read(path.join(root,'data','monitor.pid.json')).port); } catch {}
-          if(port){
-            const bridgeResult=await ensureBridge(port);
-            nextBridgeCheck=Date.now()+30000;
-            if(bridgeResult!==lastBridgeResult){ log(bridgeResult); lastBridgeResult=bridgeResult; }
-          } else {
-            nextBridgeCheck=Date.now()+10000;
+      try {
+        const monitorHealthy=await health();
+        if(monitorHealthy){
+          failures=0;
+          if(Date.now()>=nextBridgeCheck){
+            let port=0;
+            try { port=Number(read(path.join(root,'data','monitor.pid.json')).port); } catch {}
+            if(port){
+              const bridgeResult=await ensureBridge(port);
+              nextBridgeCheck=Date.now()+30000;
+              if(bridgeResult!==lastBridgeResult){ log(bridgeResult); lastBridgeResult=bridgeResult; }
+            } else {
+              nextBridgeCheck=Date.now()+10000;
+            }
           }
+        }else{
+          failures++;
+          // A newly launched logon supervisor has no monitor to wait for. Start
+          // it on the first failed probe; retain the two-probe guard only after
+          // the stack was already established, where it avoids needless churn.
+          if(firstHealthProbe || failures>=2){log(firstHealthProbe ? 'Initial health probe failed; starting monitor.' : 'Two health probes failed; recovering monitor.');await launch();failures=0;}
         }
-      }else{
-        failures++;
-        // A newly launched logon supervisor has no monitor to wait for. Start
-        // it on the first failed probe; retain the two-probe guard only after
-        // the stack was already established, where it avoids needless churn.
-        if(firstHealthProbe || failures>=2){log(firstHealthProbe ? 'Initial health probe failed; starting monitor.' : 'Two health probes failed; recovering monitor.');await launch();failures=0;}
+        firstHealthProbe=false;
+      } catch (error) {
+        log('Supervisor loop error: ' + String(error && error.stack || error));
+        failures=0;
+        firstHealthProbe=false;
       }
-      firstHealthProbe=false;
-      await new Promise(resolve=>setTimeout(resolve,10000));
+      if(!fs.existsSync(stopFile)) await new Promise(resolve=>setTimeout(resolve,10000));
     }
     log('Manual STOP observed; supervisor exiting.');
   } finally {
