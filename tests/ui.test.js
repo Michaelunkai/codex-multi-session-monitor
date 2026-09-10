@@ -257,6 +257,57 @@ test('published wall auto-connects to the local PC before asking remote devices 
   adapter.close();
 });
 
+test('published wall prefers the local PC over a previously saved remote token', async () => {
+  const { document, Event } = parseHTML(fs.readFileSync(path.join(root, 'app/public/index.html'), 'utf8'));
+  const adapter = createLiveAdapter(normalizeConfig({}, root), path.join(__dirname, 'fixtures/synthetic-12.json'));
+  const snapshot = adapter.snapshot();
+  snapshot.scope = 'running-now';
+  snapshot.displayMode = 'running-only';
+  snapshot.sessions = snapshot.sessions.filter((session) => session.status === 'RUNNING');
+  snapshot.summary.runningCount = snapshot.sessions.length;
+  snapshot.summary.relevantCount = snapshot.sessions.length;
+  const requests = [];
+  const streams = [];
+  const values = new Map([
+    ['codex-live-wall-token:https://codex-monitor.tail5cbd67.ts.net', 'saved-remote-token']
+  ]);
+  class FakeEventSource {
+    constructor(url) { this.url = url; this.listeners = {}; streams.push(this); }
+    addEventListener(name, fn) { this.listeners[name] = fn; }
+    close() { this.closed = true; }
+  }
+  const window = {
+    location: { href: 'https://michaelunkai.github.io/codex-multi-session-monitor-pages/', origin: 'https://michaelunkai.github.io', pathname: '/codex-multi-session-monitor-pages/', search: '', hash: '' },
+    URL,
+    localStorage: {
+      getItem(key) { return values.get(key) || null; },
+      setItem(key, value) { values.set(key, value); },
+      removeItem(key) { values.delete(key); }
+    },
+    history: { replaceState() {} },
+    EventSource: FakeEventSource
+  };
+  const context = {
+    document, window, EventSource: FakeEventSource, URLSearchParams, console, Set, Date, URL, encodeURIComponent,
+    setInterval() { return 1; }, clearInterval() {}, setTimeout() { return 1; }, clearTimeout() {},
+    navigator: { clipboard: { writeText: async () => {} } },
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, json: async () => snapshot };
+    }
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
+  document.dispatchEvent(new Event('DOMContentLoaded'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests[0].url, 'http://127.0.0.1:8766/api/snapshot');
+  assert.equal(requests[0].options.headers, undefined, 'local PC connection must not use the saved remote bearer token');
+  assert.equal(streams[0].url, 'http://127.0.0.1:8766/events?mode=delta');
+  assert.match(document.querySelector('#connectionBadge').textContent, /Live · this PC/);
+  assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
+  assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
+  adapter.close();
+});
+
 test('published wall keeps retrying the local PC after a transient monitor restart', async () => {
   const { document, Event } = parseHTML(fs.readFileSync(path.join(root, 'app/public/index.html'), 'utf8'));
   const adapter = createLiveAdapter(normalizeConfig({}, root), path.join(__dirname, 'fixtures/synthetic-12.json'));
@@ -267,6 +318,7 @@ test('published wall keeps retrying the local PC after a transient monitor resta
   snapshot.summary.runningCount = snapshot.sessions.length;
   const delayed = [];
   const streams = [];
+  const requests = [];
   let calls = 0;
   class FakeEventSource {
     constructor(url) { this.url = url; this.listeners = {}; streams.push(this); }
@@ -283,9 +335,10 @@ test('published wall keeps retrying the local PC after a transient monitor resta
     document, window, EventSource: FakeEventSource, URLSearchParams, console, Set, Date, URL, encodeURIComponent,
     setInterval() { return 1; }, clearInterval() {}, setTimeout(fn) { delayed.push(fn); return delayed.length; }, clearTimeout() {},
     navigator: { clipboard: { writeText: async () => {} } },
-    fetch: async () => {
+    fetch: async (url, options) => {
       calls += 1;
-      if (calls <= 36) throw new Error('monitor restarting');
+      requests.push({ url, options });
+      if (calls <= 1) throw new Error('monitor restarting');
       return { ok: true, json: async () => snapshot };
     }
   };
@@ -301,6 +354,12 @@ test('published wall keeps retrying the local PC after a transient monitor resta
   assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
   assert.equal(streams.length, 1);
   assert.match(streams[0].url, /^http:\/\/127\.0\.0\.1:8766\/events\?mode=delta$/);
+  streams[0].onerror();
+  assert.equal(delayed.length, 2, 'a local stream failure must schedule both a local probe and event-stream reconnect');
+  delayed.shift()();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests[requests.length - 1].url, 'http://127.0.0.1:8766/api/snapshot');
+  assert.equal(streams.length, 2, 'the local wall must recover its live stream after a monitor connection failure');
   adapter.close();
 });
 
