@@ -8,7 +8,9 @@ const {
   parseLiveRollout,
   parseLogActivity,
   classifyLiveSession,
-  createRolloutTracker
+  createRolloutTracker,
+  applyIpcPatches,
+  extractIpcTelemetry
 } = require('../app/server.js');
 
 function rollout(records) {
@@ -140,4 +142,37 @@ test('incremental rollout tracking exposes appended output and removes the card 
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('replays Codex IPC patches and exposes the exact in-progress response text', () => {
+  const state = {
+    id: 'thread-1',
+    title: 'Live session',
+    cwd: 'F:\\project',
+    threadRuntimeStatus: { type: 'active' },
+    turnHistory: {
+      history: {
+        entitiesByKey: {
+          'tail:0:local:tail-1': {
+            turnId: 'turn-1',
+            turnStartedAtMs: 1_800_000_000_000,
+            status: 'inProgress',
+            items: [{ type: 'agentMessage', id: 'msg-1', text: 'Hello' }]
+          }
+        }
+      }
+    }
+  };
+  applyIpcPatches(state, [{
+    op: 'replace',
+    path: ['turnHistory', 'history', 'entitiesByKey', 'tail:0:local:tail-1', 'items', 0, 'text'],
+    value: 'Hello word-by-word in real time.'
+  }]);
+  const telemetry = extractIpcTelemetry(state, { receivedAtMs: 1_800_000_003_000, revision: 8 });
+  assert.equal(telemetry.active, true);
+  assert.equal(telemetry.turnId, 'turn-1');
+  assert.equal(telemetry.source, 'codex-ipc');
+  assert.equal(telemetry.entries[0].text, 'Hello word-by-word in real time.');
+  assert.equal(telemetry.latestActivity.kind, 'ipc-live');
+  assert.equal(telemetry.latestActivity.source, 'codex-ipc');
 });

@@ -5,10 +5,11 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const http = require('node:http');
 const https = require('node:https');
+const net = require('node:net');
 const { URL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 
-const SERVER_VERSION = '2.1.0';
+const SERVER_VERSION = '2.2.0';
 const DEFAULT_PORT = 8765;
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_LIVE_WINDOW_SECONDS = 20;
@@ -178,7 +179,10 @@ function itemOutputText(item) {
   if (!item || typeof item !== 'object') return '';
   const normalized = normalizeStatus(item.type);
   if (normalized === 'usermessage' || normalized === 'reasoning' || normalized === 'contextcompaction') return '';
-  if (normalized === 'agentmessage' || normalized === 'assistant') return joinText(item.content || item.text);
+  if (normalized === 'agentmessage' || normalized === 'assistant') {
+    const content = joinText(item.content);
+    return content || joinText(item.text);
+  }
   if (normalized === 'commandexecution') {
     const formatted = nonEmpty(item.formatted_output || item.formattedOutput);
     const aggregate = nonEmpty(item.aggregated_output || item.aggregatedOutput);
@@ -559,6 +563,19 @@ function classifyLiveSession(telemetry, now, config) {
   const liveWindowSeconds = Math.max(3, integer(config && config.liveWindowSeconds, DEFAULT_LIVE_WINDOW_SECONDS));
   const lastActivityMs = Math.max(integer(telemetry && telemetry.lastActivityMs), integer(telemetry && telemetry.rolloutMtimeMs));
   const ageSeconds = lastActivityMs ? Math.max(0, (now - lastActivityMs) / 1000) : Number.POSITIVE_INFINITY;
+  if (telemetry && telemetry.ipcDirect === true && telemetry.active && telemetry.turnId) {
+    return {
+      status: 'RUNNING',
+      statusRank: STATUS_RANK.RUNNING,
+      attention: false,
+      reliability: 'direct Codex Desktop IPC stream',
+      reason: 'Codex Desktop reports an in-progress turn through its live local stream.',
+      rawStatus: 'inProgress',
+      lastActivityMs,
+      ageSeconds: Number.isFinite(ageSeconds) ? Math.round(ageSeconds * 10) / 10 : null,
+      elapsedSeconds: telemetry.startedAtMs ? Math.max(0, Math.round((now - telemetry.startedAtMs) / 100) / 10) : null
+    };
+  }
   const eligible = Boolean(telemetry && telemetry.active && telemetry.turnId && lastActivityMs && ageSeconds <= liveWindowSeconds);
   if (eligible) {
     return {
@@ -775,6 +792,469 @@ function readCodexDesktopProcess() {
   }
 }
 
+function ipcPathParts(pathValue) {
+  if (Array.isArray(pathValue)) return pathValue.slice();
+  if (pathValue === undefined || pathValue === null || pathValue === '') return [];
+  return String(pathValue).split('/').filter((part) => part !== '').map((part) => {
+    const unescaped = part.replace(/~1/g, '/').replace(/~0/g, '~');
+    return /^\d+$/.test(unescaped) ? Number(unescaped) : unescaped;
+  });
+}
+
+function ipcPathParent(root, pathValue) {
+  const parts = ipcPathParts(pathValue);
+  if (!parts.length) return { root, key: null, parts };
+  let parent = root;
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    const key = parts[index];
+    if (parent === null || parent === undefined || !(key in Object(parent))) {
+      throw new Error('IPC patch parent is missing at ' + String(key));
+    }
+    parent = parent[key];
+  }
+  return { root, parent, key: parts[parts.length - 1], parts };
+}
+
+function ipcPatchValue(root, pathValue) {
+  const parts = ipcPathParts(pathValue);
+  let value = root;
+  for (const key of parts) {
+    if (value === null || value === undefined || !(key in Object(value))) {
+      throw new Error('IPC patch value is missing at ' + String(key));
+    }
+    value = value[key];
+  }
+  return value;
+}
+
+function cloneIpcPatchValue(value) {
+  if (value === null || value === undefined || typeof value !== 'object') return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function ipcPatchEqual(left, right) {
+  try { return JSON.stringify(left) === JSON.stringify(right); } catch { return false; }
+}
+
+function ipcSetPatchValue(root, pathValue, value, operation) {
+  const location = ipcPathParent(root, pathValue);
+  if (location.key === null) return cloneIpcPatchValue(value);
+  const parent = location.parent;
+  if (parent === null || parent === undefined) throw new Error('IPC patch parent is null');
+  if (Array.isArray(parent)) {
+    if (location.key === '-') {
+      if (operation !== 'add') throw new Error('Only add may use the IPC array append path');
+      parent.push(cloneIpcPatchValue(value));
+      return root;
+    }
+    const index = Number(location.key);
+    if (!Number.isInteger(index) || index < 0) throw new Error('Invalid IPC array index');
+    if (operation === 'add') {
+      if (index > parent.length) throw new Error('IPC array add index is out of range');
+      parent.splice(index, 0, cloneIpcPatchValue(value));
+    } else {
+      if (index >= parent.length) throw new Error('IPC array replace index is out of range');
+      parent[index] = cloneIpcPatchValue(value);
+    }
+    return root;
+  }
+  parent[location.key] = cloneIpcPatchValue(value);
+  return root;
+}
+
+function ipcRemovePatchValue(root, pathValue) {
+  const location = ipcPathParent(root, pathValue);
+  if (location.key === null) throw new Error('Removing the IPC root is unsupported');
+  const parent = location.parent;
+  if (parent === null || parent === undefined) throw new Error('IPC patch parent is null');
+  if (Array.isArray(parent)) {
+    const index = Number(location.key);
+    if (!Number.isInteger(index) || index < 0 || index >= parent.length) throw new Error('Invalid IPC array remove index');
+    parent.splice(index, 1);
+  } else {
+    if (!Object.prototype.hasOwnProperty.call(parent, location.key)) throw new Error('IPC patch remove key is missing');
+    delete parent[location.key];
+  }
+  return root;
+}
+
+function applyIpcPatches(root, patches) {
+  let nextRoot = root;
+  if (!Array.isArray(patches)) return nextRoot;
+  for (const patch of patches) {
+    if (!patch || typeof patch !== 'object') throw new Error('Invalid IPC patch');
+    const operation = nonEmpty(patch.op).toLowerCase();
+    if (operation === 'add' || operation === 'replace') {
+      nextRoot = ipcSetPatchValue(nextRoot, patch.path, patch.value, operation);
+    } else if (operation === 'remove') {
+      nextRoot = ipcRemovePatchValue(nextRoot, patch.path);
+    } else if (operation === 'copy' || operation === 'move') {
+      const value = cloneIpcPatchValue(ipcPatchValue(nextRoot, patch.from));
+      if (operation === 'move') nextRoot = ipcRemovePatchValue(nextRoot, patch.from);
+      nextRoot = ipcSetPatchValue(nextRoot, patch.path, value, 'add');
+    } else if (operation === 'test') {
+      if (!ipcPatchEqual(ipcPatchValue(nextRoot, patch.path), patch.value)) throw new Error('IPC patch test failed');
+    } else {
+      throw new Error('Unsupported IPC patch operation: ' + operation);
+    }
+  }
+  return nextRoot;
+}
+
+function ipcActiveTurn(entity) {
+  const status = normalizeStatus(entity && entity.status);
+  return status === 'inprogress' || status === 'pending' || status === 'running' || status === 'active';
+}
+
+function ipcTurnIdFromKey(key, entity) {
+  const explicit = nonEmpty(entity && (entity.turnId || entity.turn_id));
+  if (explicit) return explicit;
+  const text = nonEmpty(key);
+  return text.startsWith('turn:') ? text.slice(5) : '';
+}
+
+function ipcActivityForItem(item, timestampMs, ordinal, output) {
+  const type = normalizeStatus(item && item.type);
+  const detail = item && (item.command || item.command_line || item.name || item.tool || item.server);
+  if (type === 'agentmessage' || type === 'assistant') {
+    return makeLiveActivity(
+      'ipc-live',
+      output ? 'Response streaming word by word' : 'Writing response',
+      output ? 'Exact live text from Codex Desktop · ' + String(output.length) + ' chars' : 'Waiting for response text from Codex Desktop',
+      timestampMs,
+      ordinal,
+      'codex-ipc'
+    );
+  }
+  if (type === 'commandexecution') {
+    const status = normalizeStatus(item && item.status);
+    return makeLiveActivity(
+      'ipc-live',
+      status === 'inprogress' || status === 'running' ? 'Command output streaming' : 'Running command',
+      detail,
+      timestampMs,
+      ordinal,
+      'codex-ipc'
+    );
+  }
+  if (type === 'reasoning') return makeLiveActivity('ipc-live', 'Codex is thinking', '', timestampMs, ordinal, 'codex-ipc');
+  if (type.includes('tool') || type.includes('mcp')) return makeLiveActivity('ipc-live', 'Running tool', detail, timestampMs, ordinal, 'codex-ipc');
+  if (type === 'plan' || type === 'todolist') return makeLiveActivity('ipc-live', 'Updating plan', '', timestampMs, ordinal, 'codex-ipc');
+  return makeLiveActivity('ipc-live', 'Codex is working', item && item.type, timestampMs, ordinal, 'codex-ipc');
+}
+
+function extractIpcTelemetry(conversationState, options = {}) {
+  const history = conversationState && conversationState.turnHistory && conversationState.turnHistory.history;
+  const entities = history && history.entitiesByKey && typeof history.entitiesByKey === 'object'
+    ? history.entitiesByKey
+    : {};
+  const active = Object.entries(entities)
+    .filter(([, entity]) => ipcActiveTurn(entity))
+    .sort((left, right) => epochMilliseconds(right[1] && right[1].turnStartedAtMs) - epochMilliseconds(left[1] && left[1].turnStartedAtMs));
+  const receivedAtMs = integer(options.receivedAtMs, Date.now());
+  const revision = integer(options.revision);
+  if (!active.length) {
+    return {
+      active: false,
+      turnId: '',
+      startedAtMs: 0,
+      lastActivityMs: receivedAtMs,
+      latestActivity: makeLiveActivity('ipc-idle', 'Codex stream is idle', '', receivedAtMs, revision, 'codex-ipc'),
+      entries: [],
+      progress: null,
+      source: 'codex-ipc',
+      outputSource: 'codex-ipc',
+      revision
+    };
+  }
+  const [entityKey, turn] = active[0];
+  const turnId = ipcTurnIdFromKey(entityKey, turn);
+  const startedAtMs = epochMilliseconds(turn && (turn.turnStartedAtMs || turn.startedAtMs));
+  const items = Array.isArray(turn && turn.items) ? turn.items : [];
+  const entries = [];
+  let latestActivity = makeLiveActivity('ipc-live', 'Codex is working', 'Live Desktop stream', receivedAtMs, items.length || revision, 'codex-ipc');
+  let progress = null;
+  items.forEach((item, index) => {
+    if (!item || typeof item !== 'object') return;
+    const timestampMs = Math.max(
+      epochMilliseconds(item.completedAtMs || item.completed_at_ms),
+      epochMilliseconds(item.startedAtMs || item.started_at_ms),
+      receivedAtMs
+    );
+    const output = itemOutputText(item);
+    const entry = output
+      ? makeLiveEntry(item.type, item.id || 'ipc-item-' + String(index + 1), integer(item.rolloutOrdinal, index + 1), timestampMs, output, 'codex-ipc')
+      : null;
+    if (entry) {
+      insertLiveEntry(entries, entry);
+      latestActivity = ipcActivityForItem(item, receivedAtMs, entry.ordinal, output);
+    } else if (normalizeStatus(item.type) !== 'usermessage' && normalizeStatus(item.type) !== 'reasoning') {
+      latestActivity = ipcActivityForItem(item, receivedAtMs, integer(item.rolloutOrdinal, index + 1), '');
+    }
+    progress = progress || progressFromItem({ parsed: item });
+  });
+  entries.sort((left, right) => (left.ordinal - right.ordinal) || (left.timestampMs - right.timestampMs));
+  return {
+    active: true,
+    turnId,
+    startedAtMs,
+    lastActivityMs: receivedAtMs,
+    latestActivity,
+    entries,
+    progress,
+    source: 'codex-ipc',
+    outputSource: 'codex-ipc',
+    revision
+  };
+}
+
+function createCodexIpcObserver(options = {}) {
+  const endpoint = process.platform === 'win32' ? '\\\\.\\pipe\\codex-ipc' : path.join(process.env.XDG_RUNTIME_DIR || path.join(process.env.TMPDIR || '/tmp', 'codex-ipc'), 'ipc.sock');
+  const onUpdate = typeof options.onUpdate === 'function' ? options.onUpdate : () => {};
+  const desired = new Set();
+  const following = new Set();
+  const states = new Map();
+  let socket = null;
+  let buffer = Buffer.alloc(0);
+  let clientId = 'initializing-client';
+  let initialized = false;
+  let connecting = false;
+  let reconnectTimer = null;
+  let stopped = false;
+  let lastError = '';
+  let lastEventMs = 0;
+
+  const status = {
+    available: process.platform === 'win32',
+    connected: false,
+    initialized: false,
+    followingCount: 0,
+    liveStateCount: 0,
+    lastEventAt: null,
+    lastError: ''
+  };
+
+  function changed() {
+    try { onUpdate(); } catch {}
+  }
+
+  function writeFrame(message) {
+    if (!socket || !socket.writable) return false;
+    const raw = Buffer.from(JSON.stringify(message), 'utf8');
+    if (raw.length > 256 * 1024 * 1024) return false;
+    const frame = Buffer.allocUnsafe(raw.length + 4);
+    frame.writeUInt32LE(raw.length, 0);
+    raw.copy(frame, 4);
+    try { socket.write(frame); return true; } catch { return false; }
+  }
+
+  function writeFollowing(threadId, followingValue) {
+    return writeFrame({
+      type: 'broadcast',
+      method: 'thread-stream-following-changed',
+      sourceClientId: clientId,
+      version: 1,
+      params: { conversationId: threadId, hostId: 'local', following: followingValue }
+    });
+  }
+
+  function syncSubscriptions() {
+    if (!initialized || !socket || !socket.writable) return;
+    for (const id of following) {
+      if (!desired.has(id)) {
+        writeFollowing(id, false);
+        following.delete(id);
+        states.delete(id);
+      }
+    }
+    for (const id of desired) {
+      if (!following.has(id) && writeFollowing(id, true)) following.add(id);
+    }
+    status.followingCount = following.size;
+    status.liveStateCount = states.size;
+  }
+
+  function requestSnapshot(threadId) {
+    if (!desired.has(threadId) || !initialized) return;
+    writeFollowing(threadId, true);
+  }
+
+  function handleMessage(message) {
+    if (!message || typeof message !== 'object') return;
+    if (message.type === 'response' && message.method === 'initialize') {
+      if (message.resultType !== 'success' || !message.result || !message.result.clientId) {
+        lastError = 'Codex IPC initialize failed';
+        status.lastError = lastError;
+        return;
+      }
+      clientId = String(message.result.clientId);
+      initialized = true;
+      status.initialized = true;
+      status.connected = true;
+      status.lastError = '';
+      syncSubscriptions();
+      changed();
+      return;
+    }
+    if (message.type !== 'broadcast' || message.method !== 'thread-stream-state-changed') return;
+    const params = message.params || {};
+    const threadId = nonEmpty(params.conversationId);
+    if (!threadId || !desired.has(threadId)) return;
+    const change = params.change || {};
+    const receivedAtMs = Date.now();
+    if (change.type === 'snapshot' && change.conversationState && typeof change.conversationState === 'object') {
+      const telemetry = extractIpcTelemetry(change.conversationState, { receivedAtMs, revision: change.revision });
+      states.set(threadId, {
+        state: change.conversationState,
+        revision: integer(change.revision),
+        lastEventMs: receivedAtMs,
+        telemetry
+      });
+      lastEventMs = receivedAtMs;
+      status.lastEventAt = safeIso(lastEventMs);
+      status.liveStateCount = states.size;
+      changed();
+      return;
+    }
+    if (change.type !== 'patches' || !Array.isArray(change.patches)) return;
+    const current = states.get(threadId);
+    if (!current || integer(change.baseRevision) !== current.revision) {
+      requestSnapshot(threadId);
+      return;
+    }
+    try {
+      current.state = applyIpcPatches(current.state, change.patches);
+      current.revision = integer(change.revision, current.revision + 1);
+      current.lastEventMs = receivedAtMs;
+      current.telemetry = extractIpcTelemetry(current.state, { receivedAtMs, revision: current.revision });
+      lastEventMs = receivedAtMs;
+      status.lastEventAt = safeIso(lastEventMs);
+      changed();
+    } catch (error) {
+      states.delete(threadId);
+      lastError = 'Codex IPC patch replay failed: ' + truncate(error.message, 120);
+      status.lastError = lastError;
+      requestSnapshot(threadId);
+      changed();
+    }
+  }
+
+  function parseFrames() {
+    while (buffer.length >= 4) {
+      const length = buffer.readUInt32LE(0);
+      if (!length || length > 256 * 1024 * 1024) throw new Error('Invalid Codex IPC frame length');
+      if (buffer.length < length + 4) return;
+      const raw = buffer.subarray(4, length + 4);
+      buffer = buffer.subarray(length + 4);
+      try { handleMessage(JSON.parse(raw.toString('utf8'))); } catch (error) {
+        lastError = 'Codex IPC message parse failed: ' + truncate(error.message, 120);
+        status.lastError = lastError;
+      }
+    }
+  }
+
+  function scheduleReconnect() {
+    if (stopped || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, 1500);
+    reconnectTimer.unref?.();
+  }
+
+  function connect() {
+    if (stopped || connecting || socket) return;
+    connecting = true;
+    const candidate = net.createConnection(endpoint);
+    socket = candidate;
+    buffer = Buffer.alloc(0);
+    candidate.once('connect', () => {
+      connecting = false;
+      status.connected = true;
+      status.initialized = false;
+      clientId = 'initializing-client';
+      initialized = false;
+      writeFrame({
+        type: 'request',
+        requestId: crypto.randomUUID(),
+        sourceClientId: clientId,
+        version: 0,
+        method: 'initialize',
+        params: { clientType: 'codex-multi-session-monitor-live-observer' }
+      });
+    });
+    candidate.on('data', (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      try { parseFrames(); } catch (error) {
+        lastError = 'Codex IPC frame parse failed: ' + truncate(error.message, 120);
+        status.lastError = lastError;
+        candidate.destroy();
+      }
+    });
+    candidate.on('error', (error) => {
+      connecting = false;
+      lastError = 'Codex IPC unavailable: ' + truncate(error.code || error.message, 120);
+      status.lastError = lastError;
+    });
+    candidate.on('close', () => {
+      if (socket !== candidate) return;
+      socket = null;
+      connecting = false;
+      initialized = false;
+      status.connected = false;
+      status.initialized = false;
+      following.clear();
+      states.clear();
+      status.followingCount = 0;
+      status.liveStateCount = 0;
+      changed();
+      scheduleReconnect();
+    });
+  }
+
+  function setDesired(threadIds) {
+    const next = new Set((Array.isArray(threadIds) ? threadIds : []).map((value) => nonEmpty(value)).filter(Boolean));
+    for (const id of desired) if (!next.has(id)) states.delete(id);
+    desired.clear();
+    for (const id of next) desired.add(id);
+    syncSubscriptions();
+    status.liveStateCount = states.size;
+  }
+
+  function get(threadId) {
+    const current = states.get(String(threadId));
+    return current ? current.telemetry : null;
+  }
+
+  function getStatus() {
+    return {
+      ...status,
+      lastError,
+      lastEventAt: status.lastEventAt,
+      endpointType: process.platform === 'win32' ? 'Windows per-user Codex IPC' : 'Codex IPC socket'
+    };
+  }
+
+  function close() {
+    stopped = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    if (initialized) for (const id of following) writeFollowing(id, false);
+    following.clear();
+    states.clear();
+    desired.clear();
+    if (socket) socket.destroy();
+    socket = null;
+    status.connected = false;
+    status.initialized = false;
+    status.followingCount = 0;
+    status.liveStateCount = 0;
+  }
+
+  connect();
+  return { setDesired, get, getStatus, close };
+}
+
 function stableDigest(snapshot) {
   const sessions = snapshot.sessions || [];
   const compact = {
@@ -796,7 +1276,15 @@ function stableDigest(snapshot) {
         session.activity.ordinal
       ],
       progress: session.progress
-    }))
+    })),
+    liveTransport: snapshot.summary && snapshot.summary.liveTransport && {
+      connected: Boolean(snapshot.summary.liveTransport.connected),
+      initialized: Boolean(snapshot.summary.liveTransport.initialized),
+      followingCount: integer(snapshot.summary.liveTransport.followingCount),
+      liveStateCount: integer(snapshot.summary.liveTransport.liveStateCount),
+      lastEventAt: snapshot.summary.liveTransport.lastEventAt || null,
+      lastError: snapshot.summary.liveTransport.lastError || ''
+    }
   };
   return crypto.createHash('sha256').update(JSON.stringify(compact)).digest('hex');
 }
@@ -862,7 +1350,7 @@ function readToken(config) {
   return '';
 }
 
-function createLiveAdapter(config, syntheticFile = '') {
+function createLiveAdapter(config, syntheticFile = '', options = {}) {
   let stateDb = null;
   let historyDb = null;
   let logsDb = null;
@@ -871,6 +1359,7 @@ function createLiveAdapter(config, syntheticFile = '') {
   const detailCache = new Map();
   const mtimeCache = new Map();
   const rolloutTracker = createRolloutTracker();
+  const ipcObserver = syntheticFile ? null : createCodexIpcObserver({ onUpdate: options.onUpdate });
   let lastErrors = [];
 
   function openDb(current, filePath) {
@@ -970,14 +1459,17 @@ function createLiveAdapter(config, syntheticFile = '') {
     return result;
   }
 
-  function queryDetail(threadId, turnId, rolloutPath, stateUpdatedMs, rolloutTelemetry) {
+  function queryDetail(threadId, turnId, rolloutPath, stateUpdatedMs, rolloutTelemetry, ipcTelemetry) {
     const rolloutMtimeMs = integer(rolloutTelemetry && rolloutTelemetry.rolloutMtimeMs);
     const cacheKey = [
       String(stateUpdatedMs), String(turnId), String(rolloutMtimeMs),
       String(rolloutTelemetry && rolloutTelemetry.lastOrdinal),
       String(rolloutTelemetry && rolloutTelemetry.entries && rolloutTelemetry.entries.length),
       String(rolloutTelemetry && rolloutTelemetry.latestActivity && rolloutTelemetry.latestActivity.ordinal),
-      String(rolloutTelemetry && rolloutTelemetry.latestActivity && rolloutTelemetry.latestActivity.kind)
+      String(rolloutTelemetry && rolloutTelemetry.latestActivity && rolloutTelemetry.latestActivity.kind),
+      String(ipcTelemetry && ipcTelemetry.revision),
+      String(ipcTelemetry && ipcTelemetry.lastActivityMs),
+      String(ipcTelemetry && ipcTelemetry.entries && ipcTelemetry.entries.length)
     ].join(':');
     const cached = detailCache.get(threadId);
     if (cached && cached.key === cacheKey) return cached.value;
@@ -993,9 +1485,12 @@ function createLiveAdapter(config, syntheticFile = '') {
       outputTruncated: false
     };
     const entries = [];
-    for (const entry of (rolloutTelemetry && rolloutTelemetry.entries) || []) insertLiveEntry(entries, entry);
+    const ipcIsAuthoritative = Boolean(ipcTelemetry && ipcTelemetry.active);
+    for (const entry of (ipcIsAuthoritative ? ipcTelemetry.entries : (rolloutTelemetry && rolloutTelemetry.entries)) || []) {
+      insertLiveEntry(entries, entry);
+    }
     const progressItems = [];
-    if (historyDb && turnId) {
+    if (!ipcIsAuthoritative && historyDb && turnId) {
       try {
         const rows = historyDb.prepare([
           'SELECT item_type, item_json, created_at_ms, rollout_ordinal',
@@ -1045,6 +1540,7 @@ function createLiveAdapter(config, syntheticFile = '') {
     const outputDigest = crypto.createHash('sha256').update(JSON.stringify(liveOutput.map((entry) => [entry.id, entry.ordinal, entry.text]))).digest('hex');
     const latestItemMs = Math.max(
       ...liveOutput.map((entry) => integer(entry.timestampMs)),
+      integer(ipcTelemetry && ipcTelemetry.lastActivityMs),
       integer(rolloutTelemetry && rolloutTelemetry.lastActivityMs),
       0
     );
@@ -1057,8 +1553,12 @@ function createLiveAdapter(config, syntheticFile = '') {
         text: latest.text,
         at: latest.at
       } : null,
-      activity: rolloutTelemetry && rolloutTelemetry.latestActivity ? { ...rolloutTelemetry.latestActivity } : null,
-      progress: progressItems.map(progressFromItem).find(Boolean) || null,
+      activity: ipcIsAuthoritative && ipcTelemetry.latestActivity
+        ? { ...ipcTelemetry.latestActivity }
+        : rolloutTelemetry && rolloutTelemetry.latestActivity ? { ...rolloutTelemetry.latestActivity } : null,
+      progress: ipcIsAuthoritative
+        ? ipcTelemetry.progress || null
+        : progressItems.map(progressFromItem).find(Boolean) || null,
       liveOutput,
       outputDigest,
       outputChars,
@@ -1201,7 +1701,9 @@ function createLiveAdapter(config, syntheticFile = '') {
       const turn = turnData.turns.get(String(row.id));
       if (normalizeStatus(turn && turn.status) === 'inprogress') inProgressThreadIds.push(String(row.id));
     }
+    const ipcStatus = ipcObserver ? ipcObserver.getStatus() : null;
     const recentLogActivities = queryRecentLogActivities(inProgressThreadIds, now);
+    const desiredIpcThreadIds = [];
     for (const row of stateRows) {
       const id = String(row.id);
       const turn = turnData.turns.get(id) || null;
@@ -1227,10 +1729,40 @@ function createLiveAdapter(config, syntheticFile = '') {
         ? rolloutTracker(meta.rolloutPath, now)
         : { active: false, lastActivityMs: 0, rolloutMtimeMs };
       telemetry.rolloutMtimeMs = Math.max(integer(telemetry.rolloutMtimeMs), rolloutMtimeMs);
+      const ipcTelemetry = ipcObserver ? ipcObserver.get(id) : null;
+      if (ipcObserver && ipcTelemetry && ipcStatus && ipcStatus.connected && ipcStatus.initialized) {
+        telemetry.ipcObserved = true;
+        telemetry.ipcDirect = Boolean(ipcTelemetry.active && ipcTelemetry.turnId);
+        telemetry.lastOrdinal = Math.max(integer(telemetry.lastOrdinal), integer(ipcTelemetry.revision));
+        if (telemetry.ipcDirect) {
+          telemetry.active = true;
+          telemetry.turnId = ipcTelemetry.turnId || telemetry.turnId;
+          telemetry.startedAtMs = ipcTelemetry.startedAtMs || telemetry.startedAtMs;
+          telemetry.lastActivityMs = Math.max(integer(telemetry.lastActivityMs), integer(ipcTelemetry.lastActivityMs));
+          telemetry.latestActivity = ipcTelemetry.latestActivity || telemetry.latestActivity;
+        } else {
+          // A connected Desktop stream that reports no in-progress turn is a
+          // terminal observation for this card. Do not let stale SQLite or
+          // rollout rows keep a completed session on the running-only wall.
+          telemetry.active = false;
+          telemetry.turnId = '';
+          telemetry.startedAtMs = 0;
+          telemetry.lastActivityMs = integer(ipcTelemetry.lastActivityMs);
+          telemetry.latestActivity = ipcTelemetry.latestActivity || telemetry.latestActivity;
+        }
+      }
       const logActivity = recentLogActivities.get(id);
-      if (telemetry.active && logActivity && logActivity.timestampMs >= integer(telemetry.lastActivityMs)) {
+      if (!telemetry.ipcDirect && telemetry.active && logActivity && logActivity.timestampMs >= integer(telemetry.lastActivityMs)) {
         telemetry.lastActivityMs = logActivity.timestampMs;
         telemetry.latestActivity = logActivity;
+      }
+      const fallbackClassification = classifyLiveSession(telemetry, now, config);
+      const recentPersistedTurn = normalizeStatus(turn && turn.status) === 'inprogress' &&
+        meta.updatedAtMs > 0 && now - meta.updatedAtMs <= config.activeWindowSeconds * 1000;
+      if (ipcObserver && (
+        telemetry.ipcDirect || fallbackClassification.status === 'RUNNING' || recentPersistedTurn
+      )) {
+        desiredIpcThreadIds.push(id);
       }
       if (telemetry.active) activeRolloutCount += 1;
       if (telemetry.error) telemetryErrorCount += 1;
@@ -1239,7 +1771,7 @@ function createLiveAdapter(config, syntheticFile = '') {
       const indexedTitle = indexMap.get(id);
       const title = truncate(compactWhitespace(indexedTitle || meta.title), 180);
       const liveTurnId = telemetry.turnId || (turn && turn.id) || null;
-      const detail = queryDetail(id, liveTurnId, meta.rolloutPath, meta.updatedAtMs, telemetry);
+      const detail = queryDetail(id, liveTurnId, meta.rolloutPath, meta.updatedAtMs, telemetry, ipcTelemetry);
       const latestItem = detail.latestItem || null;
       const session = {
         id,
@@ -1280,12 +1812,14 @@ function createLiveAdapter(config, syntheticFile = '') {
         outputChars: detail.outputChars,
         outputTruncated: detail.outputTruncated,
         progress: detail.progress || null,
+        liveTransport: telemetry.ipcDirect ? 'codex-ipc' : 'rollout-fallback',
         archived: false,
         synthetic: false,
         relevant: true
       };
       runningSessions.push(session);
     }
+    if (ipcObserver) ipcObserver.setDesired(desiredIpcThreadIds);
     runningSessions.sort((a, b) => {
       return String(b.lastActivityAt || '').localeCompare(String(a.lastActivityAt || ''));
     });
@@ -1315,7 +1849,16 @@ function createLiveAdapter(config, syntheticFile = '') {
         liveWindowSeconds: config.liveWindowSeconds,
         pollMs: config.pollMs,
         displayMode: 'running-only',
-        outputTransport: 'Codex rollout event records + live activity'
+        outputTransport: 'Codex Desktop IPC live stream + read-only rollout fallback',
+        liveTransport: ipcStatus || {
+          available: false,
+          connected: false,
+          initialized: false,
+          followingCount: 0,
+          liveStateCount: 0,
+          lastEventAt: null,
+          lastError: ''
+        }
       },
       sessions,
       allSessions: sessions
@@ -1325,6 +1868,7 @@ function createLiveAdapter(config, syntheticFile = '') {
   return {
     snapshot,
     close() {
+      try { if (ipcObserver) ipcObserver.close(); } catch {}
       try { if (stateDb) stateDb.close(); } catch {}
       try { if (historyDb) historyDb.close(); } catch {}
       try { if (logsDb) logsDb.close(); } catch {}
@@ -1451,14 +1995,24 @@ function startServer(options = {}) {
     throw new Error('TLS certificate files are missing: ' + config.tls.certFile);
   }
   ensureDirectory(path.join(root, 'data'));
-  const adapter = createLiveAdapter(config, syntheticFile);
-  const subscribers = new Set();
   let lastInternal = null;
   let lastSignature = '';
   let cacheAt = 0;
   let server;
   let pollTimer;
   let heartbeatTimer;
+  let liveEmitTimer;
+  const scheduleLiveEmit = () => {
+    cacheAt = 0;
+    if (!server || !server.listening || liveEmitTimer) return;
+    liveEmitTimer = setTimeout(() => {
+      liveEmitTimer = null;
+      try { emitSnapshot(false); } catch (error) { process.stderr.write('live emit error: ' + error.message + '\n'); }
+    }, 80);
+    liveEmitTimer.unref?.();
+  };
+  const adapter = createLiveAdapter(config, syntheticFile, { onUpdate: scheduleLiveEmit });
+  const subscribers = new Set();
 
   function getInternal() {
     const now = Date.now();
@@ -1638,6 +2192,7 @@ function startServer(options = {}) {
   function cleanup() {
     if (pollTimer) clearInterval(pollTimer);
     if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (liveEmitTimer) clearTimeout(liveEmitTimer);
     for (const subscriber of subscribers) {
       try { subscriber.response.end(); } catch {}
     }
@@ -1689,6 +2244,8 @@ module.exports = {
   parseLiveRollout,
   parseLogActivity,
   createRolloutTracker,
+  applyIpcPatches,
+  extractIpcTelemetry,
   redactExact,
   createLiveAdapter,
   itemPreview,

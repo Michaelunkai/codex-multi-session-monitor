@@ -121,9 +121,14 @@ function streamProof(ip) {
   assert.equal(results[3].status, 401);
   assert.equal(live.scope, 'running-now');
   assert.equal(live.summary.displayMode, 'running-only');
+  assert.equal(live.summary.liveTransport && live.summary.liveTransport.connected, true);
+  assert.equal(live.summary.liveTransport && live.summary.liveTransport.initialized, true);
   assert.equal(new Set(live.sessions.map((session) => session.id)).size, live.sessions.length);
   assert.equal(live.sessions.every((session) => session.status === 'RUNNING'), true);
   assert.equal(live.sessions.every((session) => Array.isArray(session.liveOutput)), true);
+  assert.equal(live.sessions.every((session) => session.liveTransport === 'codex-ipc'), true, 'every public live card must come from the direct Codex Desktop stream');
+  assert.equal(live.sessions.every((session) => session.liveOutput.every((entry) => entry.source === 'codex-ipc')), true, 'every public displayed entry must be direct Desktop output');
+  assert.equal(live.sessions.every((session) => session.activity && session.activity.source === 'codex-ipc'), true, 'every public activity must be direct Desktop activity');
   assert.equal(live.sessions.every((session) => session.activity && session.activity.label && session.activity.at), true);
   assert.match(results[4].body, /Live wall/);
   assert.match(results[5].body, /renderTranscript/);
@@ -145,6 +150,13 @@ function streamProof(ip) {
     hiddenHistory: live.summary.hiddenNonRunningCount,
     outputSessions: live.sessions.filter((session) => session.liveOutput.length > 0).length,
     allCardsRunning: live.sessions.every((session) => session.status === 'RUNNING'),
+    directIpc: {
+      connected: live.summary.liveTransport.connected,
+      initialized: live.summary.liveTransport.initialized,
+      followingCount: live.summary.liveTransport.followingCount,
+      liveStateCount: live.summary.liveTransport.liveStateCount,
+      directCards: live.sessions.filter((session) => session.liveTransport === 'codex-ipc').length
+    },
     assets: results.slice(4).map((result) => ({ status: result.status, bytes: result.body.length })),
     stream,
     streamActivityChanged: stream.first && stream.latest ? JSON.stringify(stream.first.activities) !== JSON.stringify(stream.latest.activities) : false,
