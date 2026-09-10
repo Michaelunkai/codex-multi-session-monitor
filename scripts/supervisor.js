@@ -3,16 +3,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const https = require('node:https');
+const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const stopFile = path.join(root, 'data', 'stop.request');
 const lockFile = path.join(root, 'data', 'supervisor.lock');
+const supervisorPidFile = path.join(root, 'data', 'supervisor.pid.json');
 const logFile = path.join(root, 'logs', 'supervisor.log');
 const powershell = path.join(root, 'runtime', 'powershell', 'pwsh.exe');
 const bridgeScript = path.join(__dirname, 'tailscale.ps1');
 const env = { ...process.env, TEMP:path.join(root,'temp'), TMP:path.join(root,'temp'),
   PSModuleAnalysisCachePath:path.join(root,'cache','powershell-analysis'), POWERSHELL_TELEMETRY_OPTOUT:'1',
   XDG_CACHE_HOME:path.join(root,'cache'), NODE_EXTRA_CA_CERTS:path.join(root,'config','tls','server-cert.pem') };
+const scriptHash = crypto.createHash('sha256').update(fs.readFileSync(__filename)).digest('hex');
 function log(message) {
   if (fs.existsSync(logFile) && fs.statSync(logFile).size > 1024*1024) fs.renameSync(logFile, logFile+'.previous');
   fs.appendFileSync(logFile, new Date().toISOString()+' '+message.replace(/token=[a-f0-9]+/gi,'token=[redacted]')+'\n');
@@ -26,6 +29,14 @@ function acquire() {
     fs.unlinkSync(lockFile);
   }
   try {fs.writeFileSync(lockFile,String(process.pid),{flag:'wx'});return true;} catch{return false;}
+}
+function writeSupervisorReceipt() {
+  fs.writeFileSync(supervisorPidFile, JSON.stringify({
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    scriptPath: __filename,
+    scriptHash
+  }, null, 2), 'utf8');
 }
 function health() {
   return new Promise(resolve=>{
@@ -74,6 +85,7 @@ function launch() {
 async function main(){
   if(!acquire())return;
   try {
+    writeSupervisorReceipt();
     log('Supervisor started '+process.pid);
     // A new Windows logon is a requested automatic start, including after a prior manual STOP.
     if(process.argv.includes('--logon') && fs.existsSync(stopFile))fs.unlinkSync(stopFile);
@@ -102,6 +114,14 @@ async function main(){
       await new Promise(resolve=>setTimeout(resolve,10000));
     }
     log('Manual STOP observed; supervisor exiting.');
-  } finally {if(fs.existsSync(lockFile)&&fs.readFileSync(lockFile,'utf8')===String(process.pid))fs.unlinkSync(lockFile);}
+  } finally {
+    if(fs.existsSync(supervisorPidFile)) {
+      try {
+        const receipt = read(supervisorPidFile);
+        if(Number(receipt.pid) === process.pid) fs.unlinkSync(supervisorPidFile);
+      } catch {}
+    }
+    if(fs.existsSync(lockFile)&&fs.readFileSync(lockFile,'utf8')===String(process.pid))fs.unlinkSync(lockFile);
+  }
 }
 main().catch(e=>{log(e.stack);process.exitCode=1;});

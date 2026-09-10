@@ -25,12 +25,19 @@ if ($exact) {
 }
 $addressPort = if ($runtime -and $runtime.port) { [int]$runtime.port } else { [int]$config.port }
 $supervisorLock = Join-Path $root 'data\supervisor.lock'
+$supervisorScript = Join-Path $PSScriptRoot 'supervisor.js'
+$supervisorReceiptPath = Join-Path $root 'data\supervisor.pid.json'
+$expectedSupervisorHash = if (Test-Path -LiteralPath $supervisorScript) { (Get-FileHash -LiteralPath $supervisorScript -Algorithm SHA256).Hash } else { '' }
 $supervisorRunning = $false
 if (Test-Path -LiteralPath $supervisorLock) {
     $supervisorId = 0
     if ([int]::TryParse((Get-Content $supervisorLock -Raw).Trim(), [ref]$supervisorId)) {
         $sp = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $supervisorId) -ErrorAction SilentlyContinue
-        $supervisorRunning = [bool]($sp -and $sp.ExecutablePath -eq $node -and $sp.CommandLine -like ('*' + (Join-Path $root 'scripts\supervisor.js') + '*'))
+        $receipt = $null
+        if (Test-Path -LiteralPath $supervisorReceiptPath) {
+            try { $receipt = Get-Content -LiteralPath $supervisorReceiptPath -Raw | ConvertFrom-Json } catch { $receipt = $null }
+        }
+        $supervisorRunning = [bool]($sp -and $sp.ExecutablePath -eq $node -and $sp.CommandLine -like ('*' + $supervisorScript + '*') -and $receipt -and [int]$receipt.pid -eq $supervisorId -and [string]$receipt.scriptHash -eq $expectedSupervisorHash)
     }
 }
 $bridgeStatus = $null

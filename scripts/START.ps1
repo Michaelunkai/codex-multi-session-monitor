@@ -105,12 +105,40 @@ function Get-MonitorToken {
 function Ensure-Supervisor {
     $supervisorScript = Join-Path $PSScriptRoot 'supervisor.js'
     $lockPath = Join-Path $dataRoot 'supervisor.lock'
+    $receiptPath = Join-Path $dataRoot 'supervisor.pid.json'
+    $expectedHash = (Get-FileHash -LiteralPath $supervisorScript -Algorithm SHA256).Hash
     if (Test-Path -LiteralPath $lockPath) {
         $supervisorId = 0
         if ([int]::TryParse((Get-Content $lockPath -Raw).Trim(), [ref]$supervisorId)) {
             $supervisorProcess = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $supervisorId) -ErrorAction SilentlyContinue
-            if ($supervisorProcess -and $supervisorProcess.ExecutablePath -eq $node -and $supervisorProcess.CommandLine -like ('*' + $supervisorScript + '*')) { return }
+            $receipt = $null
+            if (Test-Path -LiteralPath $receiptPath) {
+                try { $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json } catch { $receipt = $null }
+            }
+            $exact = $supervisorProcess -and $supervisorProcess.ExecutablePath -eq $node -and $supervisorProcess.CommandLine -like ('*' + $supervisorScript + '*')
+            if ($exact -and $receipt -and [int]$receipt.pid -eq $supervisorId -and [string]$receipt.scriptHash -eq $expectedHash) { return }
+            if ($exact) {
+                Stop-Process -Id $supervisorId -Force -ErrorAction SilentlyContinue
+                for ($wait = 1; $wait -le 20; $wait++) {
+                    Start-Sleep -Milliseconds 250
+                    if (-not (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $supervisorId) -ErrorAction SilentlyContinue)) { break }
+                }
+                if (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $supervisorId) -ErrorAction SilentlyContinue) { throw ('Supervisor PID ' + $supervisorId + ' did not stop for script refresh.') }
+            }
         }
+        Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $receiptPath -Force -ErrorAction SilentlyContinue
+    }
+    $orphaned = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -eq $node -and $_.CommandLine -like ('*' + $supervisorScript + '*') })
+    if ($orphaned.Count -gt 1) { throw 'More than one exact supervisor process was found; refusing to refresh ambiguously.' }
+    if ($orphaned.Count -eq 1) {
+        $orphanedPid = [int]$orphaned[0].ProcessId
+        Stop-Process -Id $orphanedPid -Force -ErrorAction SilentlyContinue
+        for ($wait = 1; $wait -le 20; $wait++) {
+            Start-Sleep -Milliseconds 250
+            if (-not (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $orphanedPid) -ErrorAction SilentlyContinue)) { break }
+        }
+        if (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $orphanedPid) -ErrorAction SilentlyContinue) { throw ('Orphaned supervisor PID ' + $orphanedPid + ' did not stop.') }
     }
     Start-Process -FilePath $node -ArgumentList @($supervisorScript) -WorkingDirectory $root -WindowStyle Hidden | Out-Null
 }
