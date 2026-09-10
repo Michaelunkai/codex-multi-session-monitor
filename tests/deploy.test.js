@@ -18,7 +18,9 @@ test('hosted bundle is the same running-only UI and contains no local secrets', 
   assert.match(deployed[1], /localProbe/);
   assert.match(deployed[1], /renderActivity/);
   assert.match(deployed[0], /codex-monitor-local-endpoint/);
-  assert.match(deployed[2], /minmax\(480px, 1fr\)/);
+  assert.match(deployed[2], /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(deployed[2], /\.session-index-row/);
+  assert.match(deployed[0], /id="sessionIndex"/);
   for (const asset of deployed) {
     assert.doesNotMatch(asset, /access\.token|server-key\.pem|state_5\.sqlite|thread_history_1\.sqlite|session_index\.jsonl/i);
   }

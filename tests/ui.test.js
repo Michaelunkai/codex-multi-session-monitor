@@ -61,6 +61,8 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
   assert.equal(document.querySelectorAll('[data-filter]').length, 0);
   assert.equal(document.querySelectorAll('.live-activity').length, 12);
   assert.equal(document.querySelectorAll('.live-transcript').length, 12);
+  assert.equal(document.querySelectorAll('.session-index-row').length, 12);
+  assert.match(document.querySelector('.session-index-row').textContent, /LATEST OUTPUT/);
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .live-transcript').textContent, /complete live output/);
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .live-activity').textContent, /Synthetic live event/);
@@ -102,6 +104,61 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
   }) });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(document.querySelectorAll('.session-card').length, 11);
+  adapter.close();
+});
+
+test('local wall prepares the private token before the copy click', async () => {
+  const { document, Event } = parseHTML(fs.readFileSync(path.join(root, 'app/public/index.html'), 'utf8'));
+  const adapter = createLiveAdapter(normalizeConfig({}, root), path.join(__dirname, 'fixtures/synthetic-12.json'));
+  const snapshot = adapter.snapshot();
+  snapshot.scope = 'running-now';
+  snapshot.displayMode = 'running-only';
+  snapshot.sessions = snapshot.sessions.filter((session) => session.status === 'RUNNING');
+  snapshot.summary.runningCount = snapshot.sessions.length;
+  snapshot.summary.relevantCount = snapshot.sessions.length;
+  const requests = [];
+  const copied = [];
+  const localToken = 'local-copy-token-' + 'x'.repeat(48);
+  class FakeEventSource {
+    constructor(url) { this.url = url; this.listeners = {}; }
+    addEventListener(name, fn) { this.listeners[name] = fn; }
+    close() { this.closed = true; }
+  }
+  const window = {
+    location: {
+      href: 'https://michaelunkai.github.io/codex-multi-session-monitor-pages/',
+      origin: 'https://michaelunkai.github.io',
+      pathname: '/codex-multi-session-monitor-pages/',
+      search: '',
+      hash: ''
+    },
+    URL,
+    history: { replaceState() {} },
+    EventSource: FakeEventSource
+  };
+  const context = {
+    document, window, EventSource: FakeEventSource, URLSearchParams, console, Set, Date, encodeURIComponent,
+    setInterval() { return 1; }, setTimeout() { return 1; }, clearInterval() {}, clearTimeout() {},
+    navigator: { clipboard: { writeText: async (value) => { copied.push(value); } } },
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      if (url === 'http://127.0.0.1:8766/api/access-link') return { ok: true, json: async () => ({ token: localToken }) };
+      return { ok: true, json: async () => snapshot };
+    }
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
+  document.dispatchEvent(new Event('DOMContentLoaded'));
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const accessRequestsBeforeClick = requests.filter((request) => request.url === 'http://127.0.0.1:8766/api/access-link').length;
+  assert.equal(accessRequestsBeforeClick, 1, 'the local wall should prepare one token during connection');
+  assert.match(document.querySelector('#copyStatus').textContent, /Ready for Android/);
+  document.querySelector('#copyButton').dispatchEvent(new Event('click'));
+  await new Promise((resolve) => setImmediate(resolve));
+  const accessRequestsAfterClick = requests.filter((request) => request.url === 'http://127.0.0.1:8766/api/access-link').length;
+  assert.equal(accessRequestsAfterClick, accessRequestsBeforeClick, 'copy click must not wait for a network token request');
+  assert.match(copied[0], /^https:\/\/michaelunkai\.github\.io\/codex-multi-session-monitor-pages\/#token=local-copy-token-/);
   adapter.close();
 });
 
@@ -358,7 +415,9 @@ test('published wall keeps retrying the local PC after a transient monitor resta
   assert.equal(delayed.length, 2, 'a local stream failure must schedule both a local probe and event-stream reconnect');
   delayed.shift()();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(requests[requests.length - 1].url, 'http://127.0.0.1:8766/api/snapshot');
+  const snapshotRequests = requests.filter((request) => request.url === 'http://127.0.0.1:8766/api/snapshot');
+  assert.equal(snapshotRequests[snapshotRequests.length - 1].url, 'http://127.0.0.1:8766/api/snapshot');
+  assert.ok(requests.some((request) => request.url === 'http://127.0.0.1:8766/api/access-link'), 'local connection should prefetch the copy token');
   assert.equal(streams.length, 2, 'the local wall must recover its live stream after a monitor connection failure');
   adapter.close();
 });

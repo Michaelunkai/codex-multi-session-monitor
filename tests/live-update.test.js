@@ -400,7 +400,8 @@ test('responsive dashboard source locks the wall to running cards with transcrip
   assert.match(html, /id="cards"/);
   assert.match(html, /RUNNING ONLY/);
   assert.doesNotMatch(html, /scopeSelect|data-filter/);
-  assert.match(css, /minmax\(480px, 1fr\)/);
+  assert.match(css, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(css, /\.session-index-row/);
   assert.match(css, /\.live-activity/);
   assert.match(css, /\.live-transcript/);
   assert.match(css, /@media \(max-width: 780px\)/);
