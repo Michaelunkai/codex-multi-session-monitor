@@ -7,7 +7,6 @@ temp/
 data/
 logs/
 downloads/
-docs/
 public-site/
 config/monitor.json
 config/access.token
