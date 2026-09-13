@@ -2,7 +2,7 @@
 param(
     [switch]$LocalOnly,
     [switch]$QuietAccess,
-    [int]$Port = 8765
+    [int]$Port = 8766
 )
 
 $ErrorActionPreference = 'Stop'

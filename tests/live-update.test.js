@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const net = require('node:net');
+const vm = require('node:vm');
 const { startServer } = require('../app/server.js');
 
 const projectRoot = path.resolve(__dirname, '..');
@@ -259,6 +260,53 @@ test('running-only 12-session dashboard endpoint and SSE update work without Cod
     const removed = removedResponse.body;
     assert.equal(removed.sessions.some((session) => session.id === 'synthetic-01'), false);
     assert.equal(removed.sessions.length, 11);
+  } finally {
+    if (running) running.close();
+    fs.rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test('local dashboard bootstraps a complete snapshot without fetch and exposes a script fallback without executable transcript injection', async () => {
+  const testRoot = path.join(projectRoot, 'temp', 'script-bootstrap-test');
+  const fixture = path.join(testRoot, 'fixture.json');
+  let running;
+  try {
+    fs.rmSync(testRoot, { recursive: true, force: true });
+    fs.mkdirSync(testRoot, { recursive: true });
+    const fixtureData = JSON.parse(fs.readFileSync(fixtureSource, 'utf8'));
+    fixtureData.sessions.forEach((session, index) => {
+      session.status = 'RUNNING';
+      session.latestOutput = index === 0 ? 'literal </script><img src=x onerror=alert(1)>' : 'live script transport ' + (index + 1);
+    });
+    fs.writeFileSync(fixture, JSON.stringify(fixtureData), 'utf8');
+    running = await startServer({
+      root: testRoot,
+      configPath: path.join(testRoot, 'config.json'),
+      syntheticFile: fixture,
+      config: { bindHost: '127.0.0.1', port: 0, pollMs: 250, auth: { required: false }, tls: { enabled: false } }
+    });
+    const port = running.runtime.port;
+    const documentResponse = await requestRaw(port, 'GET', '/');
+    assert.equal(documentResponse.statusCode, 200);
+    assert.match(documentResponse.headers['content-security-policy'], /script-src 'self' 'nonce-/);
+    assert.match(documentResponse.body, /id="codexMonitorBootstrap"/);
+    assert.doesNotMatch(documentResponse.body, /window\.__CODEX_MONITOR_BOOTSTRAP__/);
+    assert.doesNotMatch(documentResponse.body, /<\/script><img/i);
+    const bootstrapMatch = /<script nonce="[^"]+" type="application\/json" id="codexMonitorBootstrap">(.+)<\/script>/.exec(documentResponse.body);
+    assert.ok(bootstrapMatch, 'the local HTML response must contain a parseable inert JSON snapshot');
+    const bootstrapSnapshot = JSON.parse(bootstrapMatch[1]);
+    assert.equal(bootstrapSnapshot.summary.runningCount, 12);
+    assert.equal(bootstrapSnapshot.sessions.length, 12);
+
+    const scriptResponse = await requestRaw(port, 'GET', '/wall.js');
+    assert.equal(scriptResponse.statusCode, 200);
+    assert.match(scriptResponse.headers['content-type'], /^text\/javascript/);
+    assert.match(scriptResponse.body, /__CODEX_MONITOR_SCRIPT_SNAPSHOT__/);
+    assert.doesNotMatch(scriptResponse.body, /<\/script><img/i);
+    const scriptContext = { window: {} };
+    vm.runInNewContext(scriptResponse.body, scriptContext);
+    assert.equal(scriptContext.window.__CODEX_MONITOR_SCRIPT_SNAPSHOT__.summary.runningCount, 12);
+    assert.equal(scriptContext.window.__CODEX_MONITOR_SCRIPT_SNAPSHOT__.sessions.length, 12);
   } finally {
     if (running) running.close();
     fs.rmSync(testRoot, { recursive: true, force: true });

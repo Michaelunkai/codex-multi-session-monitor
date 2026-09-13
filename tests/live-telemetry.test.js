@@ -191,7 +191,9 @@ test('labels a fresh IPC-hidden subagent rollout as a live Codex rollout stream'
     );
     historyDb.close();
     const adapter = createLiveAdapter({
-      liveWindowSeconds: 20,
+      // This test verifies source labeling, not a wall-clock timeout. Leave
+      // enough freshness headroom for heavily loaded Windows CI hosts.
+      liveWindowSeconds: 600,
       activeWindowSeconds: 600,
       staleWindowSeconds: 1800,
       attentionWindowSeconds: 900,
@@ -216,6 +218,74 @@ test('labels a fresh IPC-hidden subagent rollout as a live Codex rollout stream'
       adapter.close();
     }
   } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('keeps every running session when the legacy maxSessions value is lower than the live count', () => {
+  const directory = path.join(__dirname, '..', 'temp', 'live-telemetry-all-running-test');
+  const statePath = path.join(directory, 'state.sqlite');
+  const historyPath = path.join(directory, 'history.sqlite');
+  const now = Date.now();
+  const count = 12;
+  let adapter = null;
+  fs.rmSync(directory, { recursive: true, force: true });
+  fs.mkdirSync(directory, { recursive: true });
+  try {
+    const stateDb = new DatabaseSync(statePath);
+    stateDb.exec([
+      'CREATE TABLE threads (id TEXT, rollout_path TEXT, created_at INTEGER, updated_at INTEGER, source TEXT, model_provider TEXT, cwd TEXT, title TEXT, archived INTEGER, first_user_message TEXT, agent_nickname TEXT, agent_role TEXT, model TEXT, created_at_ms INTEGER, updated_at_ms INTEGER, thread_source TEXT, preview TEXT, recency_at_ms INTEGER, name TEXT, project_id TEXT);'
+    ].join('\n'));
+    const insertThread = stateDb.prepare('INSERT INTO threads VALUES (?, ?, 0, 0, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    const historyDb = new DatabaseSync(historyPath);
+    historyDb.exec([
+      'CREATE TABLE thread_turns (thread_id TEXT, turn_id TEXT, status TEXT, started_at INTEGER, completed_at INTEGER, duration_ms INTEGER, error_json TEXT, first_user_item_id TEXT, final_agent_item_id TEXT);',
+      'CREATE TABLE thread_items (thread_id TEXT, turn_id TEXT, item_type TEXT, item_json TEXT, created_at_ms INTEGER, rollout_ordinal INTEGER);'
+    ].join('\n'));
+    const insertTurn = historyDb.prepare("INSERT INTO thread_turns VALUES (?, ?, 'inProgress', ?, 0, 0, '', '', '')");
+    for (let index = 0; index < count; index += 1) {
+      const id = 'running-' + (index + 1);
+      const turnId = 'turn-' + (index + 1);
+      const rolloutPath = path.join(directory, id + '.jsonl');
+      const records = [
+        {
+          ordinal: 1,
+          type: 'event_msg',
+          timestamp: new Date(now).toISOString(),
+          payload: { type: 'task_started', thread_id: id, turn_id: turnId, started_at: Math.floor(now / 1000) }
+        },
+        {
+          ordinal: 2,
+          type: 'response_item',
+          timestamp: new Date(now + index + 1).toISOString(),
+          payload: { type: 'agent_message_delta', thread_id: id, turn_id: turnId, item_id: 'message-' + (index + 1), delta: 'exact live output ' + (index + 1) }
+        }
+      ];
+      fs.writeFileSync(rolloutPath, records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+      insertThread.run(id, rolloutPath, '{}', '', 'F:\\project', 'Running session ' + (index + 1), '', '', '', 'test-model', now, now, 'test', '', now, '', '');
+      insertTurn.run(id, turnId, Math.floor(now / 1000));
+    }
+    stateDb.close();
+    historyDb.close();
+
+    adapter = createLiveAdapter({
+      liveWindowSeconds: 20,
+      activeWindowSeconds: 600,
+      staleWindowSeconds: 1800,
+      attentionWindowSeconds: 900,
+      relevantHours: 24,
+      maxSessions: 10,
+      maxLiveOutputChars: 100000,
+      paths: { stateDb: statePath, historyDb: historyPath, sessionIndex: '', logsDb: '' }
+    });
+    const snapshot = adapter.snapshot();
+    assert.equal(snapshot.summary.runningCount, count);
+    assert.equal(snapshot.sessions.length, count);
+    assert.equal(new Set(snapshot.sessions.map((session) => session.id)).size, count);
+    assert.equal(snapshot.sessions.every((session) => session.status === 'RUNNING'), true);
+    assert.equal(snapshot.sessions.every((session) => session.liveOutput.length === 1), true);
+  } finally {
+    if (adapter) adapter.close();
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });

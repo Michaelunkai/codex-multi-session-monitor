@@ -1,0 +1,24 @@
+{
+  "bindHost": "127.0.0.1",
+  "port": 8766,
+  "pollMs": 1500,
+  "activeWindowSeconds": 600,
+  "staleWindowSeconds": 1800,
+  "attentionWindowSeconds": 900,
+  "relevantHours": 24,
+  "maxSessions": 1000,
+  "paths": {
+    "stateDb": "",
+    "historyDb": "",
+    "sessionIndex": ""
+  },
+  "auth": {
+    "required": true,
+    "tokenFile": ""
+  },
+  "tls": {
+    "enabled": true,
+    "keyFile": "",
+    "certFile": ""
+  }
+}

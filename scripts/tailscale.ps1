@@ -54,6 +54,28 @@ function Invoke-Tailscale {
     [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
 }
 
+function Get-PreservedPublicUrl {
+    if (-not (Test-Path -LiteralPath $publicUrlPath)) { return '' }
+    $url = (Get-Content -LiteralPath $publicUrlPath -Raw).Trim().TrimEnd('/')
+    if ($url -notmatch '^https://[A-Za-z0-9][A-Za-z0-9.-]*\.ts\.net$') { return '' }
+    return $url
+}
+
+function Test-PreservedFunnel {
+    $url = Get-PreservedPublicUrl
+    $tokenPath = Join-Path $root 'config\access.token'
+    if (-not $url -or -not (Test-Path -LiteralPath $tokenPath)) { return $false }
+    try {
+        $token = (Get-Content -LiteralPath $tokenPath -Raw).Trim()
+        if ($token.Length -lt 32) { return $false }
+        $response = Invoke-WebRequest -Uri ($url + '/api/liveness') -Headers @{ Authorization = 'Bearer ' + $token } -UseBasicParsing -TimeoutSec 5
+        $payload = $response.Content | ConvertFrom-Json
+        return [bool]($response.StatusCode -eq 200 -and $payload.ok -and $payload.readOnly)
+    } catch {
+        return $false
+    }
+}
+
 function Get-TailscaleJsonStatus {
     $probe = Invoke-Tailscale -Arguments @('status', '--json')
     if ($probe.ExitCode -ne 0 -or -not $probe.Output) { return $null }
@@ -65,6 +87,14 @@ function Wait-ForTailscaleStatus {
     for ($attempt = 1; $attempt -le 120; $attempt++) {
         $last = Get-TailscaleJsonStatus
         if ($last -and [string]$last.BackendState -in @('Running', 'NeedsLogin', 'NeedsMachineAuth', 'Stopped', 'GoingOffline')) { return $last }
+        # Tailscale server-mode state can remain owned by the Windows SID that
+        # created it even after the local account is recreated or renamed. In
+        # that case the CLI returns 401 although the authenticated cached
+        # Funnel is healthy. Prove the real transport instead of reporting a
+        # false logout or trying to replace valid persistent state.
+        if (($attempt % 4) -eq 0 -and (Test-PreservedFunnel)) {
+            return [pscustomobject]@{ BackendState = 'Running'; PreservedFunnel = $true }
+        }
         Start-Sleep -Milliseconds 250
     }
     if ($last) { return $last }
@@ -196,6 +226,7 @@ switch ($Action) {
         $daemon = @(Get-ExactProcess -Executable $tailscaled -RequiredText ('--socket=' + $socket))
         $status = if ($daemon.Count -eq 1) { Get-TailscaleJsonStatus } else { $null }
         $loggedIn = [bool]($status -and [string]$status.BackendState -eq 'Running')
+        if (-not $loggedIn -and $daemon.Count -eq 1) { $loggedIn = Test-PreservedFunnel }
         $publicUrl = if (Test-Path -LiteralPath $publicUrlPath) { (Get-Content -LiteralPath $publicUrlPath -Raw).Trim() } else { '' }
         [pscustomobject]@{
             Daemon = [bool]($daemon.Count -eq 1)
@@ -210,6 +241,10 @@ switch ($Action) {
         $status = Wait-ForTailscaleStatus
         if ([string]$status.BackendState -ne 'Running') {
             Ensure-Auth
+            break
+        }
+        if ($status.PSObject.Properties['PreservedFunnel'] -and $status.PreservedFunnel) {
+            Write-Message ('Private HTTPS bridge: ' + (Get-PreservedPublicUrl) + ' (preserved authenticated route verified)')
             break
         }
         if ($MonitorPort) { Ensure-Funnel }

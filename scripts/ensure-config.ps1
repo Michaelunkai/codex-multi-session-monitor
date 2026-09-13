@@ -4,7 +4,7 @@ param(
     [string]$Root,
     [Parameter(Mandatory = $true)]
     [string]$BindHost,
-    [int]$Port = 8765
+    [int]$Port = 8766
 )
 
 $ErrorActionPreference = 'Stop'

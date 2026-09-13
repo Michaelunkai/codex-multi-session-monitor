@@ -64,6 +64,11 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
   assert.equal(document.querySelectorAll('.session-index-row').length, 12);
   assert.match(document.querySelector('.session-index-row').textContent, /LATEST OUTPUT/);
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);
+  assert.equal(document.querySelector('#runningCount').textContent, '12');
+  assert.equal(document.querySelector('#statusRunningCount').textContent, '12');
+  assert.equal(document.querySelector('#outputCount').textContent, '12 / 12');
+  assert.match(document.querySelector('#statusOutputCoverage').textContent, /12\/12 with exact output/);
+  assert.match(document.querySelector('#sessionIndexMeta').textContent, /12 live · every session shown/);
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .live-transcript').textContent, /complete live output/);
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .live-activity').textContent, /Synthetic live event/);
   assert.match(document.querySelector('[data-session-id="synthetic-live-01"] .transcript-state').textContent, /LIVE DESKTOP IPC · updating now/);
@@ -204,7 +209,7 @@ test('hosted shell accepts the private PC access URL and targets the live PC ori
     navigator: { clipboard: { writeText: async () => {} } },
     fetch: async (url, options) => {
       requests.push({ url, options });
-      return { ok: true, json: async () => snapshot };
+      return { ok: true, json: async () => url.includes('compact=1') ? { ...snapshot, compact: true } : snapshot };
     }
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
@@ -214,7 +219,7 @@ test('hosted shell accepts the private PC access URL and targets the live PC ori
   document.querySelector('#accessInput').value = 'https://192.168.1.129:8766/#token=remote-test-token';
   document.querySelector('#connectButton').dispatchEvent(new Event('click'));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.match(requests[0].url, /^https:\/\/192\.168\.1\.129:8766\/api\/snapshot\?token=remote-test-token$/);
+  assert.match(requests[0].url, /^https:\/\/192\.168\.1\.129:8766\/api\/snapshot\?compact=1&token=remote-test-token$/);
   assert.equal(requests[0].options.headers.Authorization, 'Bearer remote-test-token');
   assert.match(streams[0].url, /^https:\/\/192\.168\.1\.129:8766\/events\?mode=delta&token=remote-test-token$/);
   assert.equal(document.querySelectorAll('.session-card').length, 12);
@@ -249,7 +254,7 @@ test('same-origin PC wall connects without a bearer link while remote shell stay
     navigator: { clipboard: { writeText: async () => {} } },
     fetch: async (url, options) => {
       requests.push({ url, options });
-      return { ok: true, json: async () => snapshot };
+      return { ok: true, json: async () => url.includes('compact=1') ? { ...snapshot, compact: true } : snapshot };
     }
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
@@ -260,6 +265,75 @@ test('same-origin PC wall connects without a bearer link while remote shell stay
   assert.equal(requests[0].options.headers, undefined);
   assert.equal(streams[0].url, 'http://127.0.0.1:8766/events?mode=delta');
   assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length);
+  adapter.close();
+});
+
+test('same-origin loopback wall renders its inline snapshot immediately and keeps updating through a script fallback when browser fetch is blocked', async () => {
+  const { document, Event } = parseHTML(fs.readFileSync(path.join(root, 'app/public/index.html'), 'utf8'));
+  document.querySelector('meta[name="codex-monitor-local-endpoint"]').setAttribute('content', 'http://127.0.0.1:8766');
+  const adapter = createLiveAdapter(normalizeConfig({}, root), path.join(__dirname, 'fixtures/synthetic-12.json'));
+  const snapshot = adapter.snapshot();
+  snapshot.scope = 'running-now';
+  snapshot.displayMode = 'running-only';
+  snapshot.sessions = snapshot.sessions.filter((session) => session.status === 'RUNNING');
+  snapshot.summary.runningCount = snapshot.sessions.length;
+  snapshot.summary.relevantCount = snapshot.sessions.length;
+  const bootstrapNode = document.createElement('script');
+  bootstrapNode.id = 'codexMonitorBootstrap';
+  bootstrapNode.type = 'application/json';
+  bootstrapNode.textContent = JSON.stringify(snapshot);
+  document.head.appendChild(bootstrapNode);
+  const streams = [];
+  const scriptRequests = [];
+  const fetchRequests = [];
+  class FakeEventSource {
+    constructor(url) {
+      this.url = url;
+      this.listeners = {};
+      streams.push(this);
+      Promise.resolve().then(() => { if (this.onerror) this.onerror(); });
+    }
+    addEventListener(name, fn) { this.listeners[name] = fn; }
+    close() { this.closed = true; }
+  }
+  const window = {
+    location: { href: 'http://127.0.0.1:8766/', origin: 'http://127.0.0.1:8766', pathname: '/', search: '', hash: '' },
+    URL,
+    EventSource: FakeEventSource,
+    history: { replaceState() {} }
+  };
+  const appendToHead = document.head.appendChild.bind(document.head);
+  document.head.appendChild = (node) => {
+    const appended = appendToHead(node);
+    if (node.tagName === 'SCRIPT' && /\/wall\.js\?_=/i.test(node.src)) {
+      scriptRequests.push(node.src);
+      Promise.resolve().then(() => {
+        window.__CODEX_MONITOR_SCRIPT_SNAPSHOT__ = snapshot;
+        node.onload();
+      });
+    }
+    return appended;
+  };
+  const context = {
+    document, window, EventSource: FakeEventSource, URLSearchParams, console, Set, Date, URL, encodeURIComponent,
+    setInterval() { return 1; }, clearInterval() {}, setTimeout() { return 1; }, clearTimeout() {},
+    navigator: { clipboard: { writeText: async () => {} } },
+    fetch: async (url) => { fetchRequests.push(url); throw new Error('browser rejected fetch'); }
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
+  document.dispatchEvent(new Event('DOMContentLoaded'));
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(document.querySelectorAll('.session-card').length, snapshot.sessions.length, 'the inline local snapshot must render before any fetch succeeds');
+  assert.equal(document.querySelector('#runningCount').textContent, String(snapshot.sessions.length));
+  assert.equal(fetchRequests.length, 0, 'the bootstrap path must not depend on fetch');
+  assert.equal(streams.length, 1);
+  assert.equal(streams[0].url, 'http://127.0.0.1:8766/events?mode=delta');
+  assert.equal(streams[0].closed, true, 'failed SSE must be replaced by the script transport');
+  assert.equal(scriptRequests.length, 1);
+  assert.match(scriptRequests[0], /^http:\/\/127\.0\.0\.1:8766\/wall\.js\?_=/);
+  assert.match(document.querySelector('#connectionBadge').textContent, /Live · this PC/);
   adapter.close();
 });
 
@@ -470,7 +544,7 @@ test('one-tap access link auto-connects, stores the token, and cleans the addres
   vm.runInNewContext(fs.readFileSync(path.join(root, 'app/public/app.js'), 'utf8'), context);
   document.dispatchEvent(new Event('DOMContentLoaded'));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.match(requests[0].url, /^https:\/\/192\.168\.1\.129:8766\/api\/snapshot\?token=remote-test-token$/);
+  assert.match(requests[0].url, /^https:\/\/192\.168\.1\.129:8766\/api\/snapshot\?compact=1&token=remote-test-token$/);
   assert.equal(values.get('codex-live-wall-token:https://192.168.1.129:8766'), 'remote-test-token');
   assert.equal(replaced[0], 'https://michaelunkai.github.io/codex-multi-session-monitor-pages/');
   assert.equal(document.querySelector('#connectPanel').classList.contains('hidden'), true);

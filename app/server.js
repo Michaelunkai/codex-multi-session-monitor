@@ -9,8 +9,8 @@ const net = require('node:net');
 const { URL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 
-const SERVER_VERSION = '2.5.7';
-const DEFAULT_PORT = 8765;
+const SERVER_VERSION = '2.6.6';
+const DEFAULT_PORT = 8766;
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_LIVE_WINDOW_SECONDS = 20;
 const DEFAULT_ACTIVE_WINDOW_SECONDS = 600;
@@ -1858,7 +1858,11 @@ function createLiveAdapter(config, syntheticFile = '', options = {}) {
     runningSessions.sort((a, b) => {
       return String(b.lastActivityAt || '').localeCompare(String(a.lastActivityAt || ''));
     });
-    const sessions = runningSessions.slice(0, config.maxSessions);
+    // The wall is explicitly an all-running-session view. Keep every
+    // currently running card so summary.runningCount can never under-report
+    // the sessions that the UI is expected to show. maxSessions remains a
+    // backwards-compatible config field, but is not a presentation cap.
+    const sessions = runningSessions;
     const statusCounts = { RUNNING: sessions.length };
     const sourceCounts = {};
     for (const session of sessions) sourceCounts[session.sourceLabel] = (sourceCounts[session.sourceLabel] || 0) + 1;
@@ -2140,6 +2144,31 @@ function jsonResponse(response, statusCode, body) {
   response.end(payload);
 }
 
+function scriptSafeJson(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+function scriptSnapshotResponse(response, snapshot) {
+  const payload = [
+    'window.__CODEX_MONITOR_SCRIPT_SNAPSHOT__=' + scriptSafeJson(snapshot) + ';',
+    'if (typeof window.__CODEX_MONITOR_SCRIPT_RECEIVE__ === "function") window.__CODEX_MONITOR_SCRIPT_RECEIVE__(window.__CODEX_MONITOR_SCRIPT_SNAPSHOT__);',
+    ''
+  ].join('\n');
+  response.writeHead(200, {
+    'Content-Type': 'text/javascript; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Length': Buffer.byteLength(payload)
+  });
+  response.end(payload);
+}
+
 function setCorsHeaders(response, request, config) {
   const origin = normalizeOrigin(request.headers.origin);
   if (!origin || !config.corsOrigins.includes(origin)) return false;
@@ -2156,7 +2185,7 @@ function setCorsHeaders(response, request, config) {
   return true;
 }
 
-function staticResponse(response, fileName) {
+function staticResponse(response, fileName, bootstrapSnapshot = null) {
   const root = path.join(__dirname, 'public');
   const allowed = new Map([
     ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
@@ -2165,13 +2194,24 @@ function staticResponse(response, fileName) {
   ]);
   const selected = allowed.get(fileName) || allowed.get('/index.html');
   try {
-    const body = fs.readFileSync(path.join(root, selected[0]));
+    let body = fs.readFileSync(path.join(root, selected[0]));
+    let contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'";
+    if (selected[0] === 'index.html' && bootstrapSnapshot) {
+      const source = body.toString('utf8');
+      const marker = '<!-- CODEX_MONITOR_BOOTSTRAP -->';
+      if (source.includes(marker)) {
+        const nonce = crypto.randomBytes(18).toString('base64');
+        const bootstrap = '<script nonce="' + nonce + '" type="application/json" id="codexMonitorBootstrap">' + scriptSafeJson(bootstrapSnapshot) + '</script>';
+        body = Buffer.from(source.replace(marker, bootstrap), 'utf8');
+        contentSecurityPolicy = "default-src 'self'; script-src 'self' 'nonce-" + nonce + "'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'";
+      }
+    }
     response.writeHead(200, {
       'Content-Type': selected[1],
       'Cache-Control': 'no-store',
       'Referrer-Policy': 'no-referrer',
       'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+      'Content-Security-Policy': contentSecurityPolicy,
       'Content-Length': body.length
     });
     response.end(body);
@@ -2342,7 +2382,7 @@ function startServer(options = {}) {
     }
     const corsAllowed = setCorsHeaders(response, request, config);
     if (request.method === 'OPTIONS') {
-      if (!corsAllowed || !['/api/health', '/api/liveness', '/api/snapshot', '/api/access-link', '/events'].includes(url.pathname)) {
+      if (!corsAllowed || !['/api/health', '/api/liveness', '/api/snapshot', '/api/access-link', '/events', '/wall.js'].includes(url.pathname)) {
         response.writeHead(403, { 'Cache-Control': 'no-store' });
         response.end();
         return;
@@ -2356,7 +2396,10 @@ function startServer(options = {}) {
       return;
     }
     if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname === '/app.js' || url.pathname === '/styles.css') {
-      staticResponse(response, url.pathname);
+      const inlineBootstrap = (url.pathname === '/' || url.pathname === '/index.html') && authMatches(request, url, token, config.auth.required, config)
+        ? getSnapshot('relevant')
+        : null;
+      staticResponse(response, url.pathname, inlineBootstrap);
       return;
     }
     if (url.pathname === '/favicon.ico') {
@@ -2364,7 +2407,7 @@ function startServer(options = {}) {
       response.end();
       return;
     }
-    if (url.pathname === '/api/health' || url.pathname === '/api/liveness' || url.pathname === '/api/snapshot' || url.pathname === '/api/access-link' || url.pathname === '/events') {
+    if (url.pathname === '/api/health' || url.pathname === '/api/liveness' || url.pathname === '/api/snapshot' || url.pathname === '/api/access-link' || url.pathname === '/events' || url.pathname === '/wall.js') {
       if (!authMatches(request, url, token, config.auth.required, config)) {
         jsonResponse(response, 401, { error: 'Authentication required.' });
         return;
@@ -2386,6 +2429,10 @@ function startServer(options = {}) {
       }
       if (url.pathname === '/api/liveness') {
         jsonResponse(response, 200, livenessBody());
+        return;
+      }
+      if (url.pathname === '/wall.js') {
+        scriptSnapshotResponse(response, getSnapshot('relevant'));
         return;
       }
       if (url.pathname === '/api/snapshot') {
