@@ -9,7 +9,7 @@ const net = require('node:net');
 const { URL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 
-const SERVER_VERSION = '2.6.6';
+const SERVER_VERSION = '2.7.0';
 const DEFAULT_PORT = 8766;
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_LIVE_WINDOW_SECONDS = 20;
@@ -980,11 +980,11 @@ function extractIpcTelemetry(conversationState, options = {}) {
   let progress = null;
   items.forEach((item, index) => {
     if (!item || typeof item !== 'object') return;
-    const timestampMs = Math.max(
+    const itemTimestampMs = Math.max(
       epochMilliseconds(item.completedAtMs || item.completed_at_ms),
-      epochMilliseconds(item.startedAtMs || item.started_at_ms),
-      receivedAtMs
+      epochMilliseconds(item.startedAtMs || item.started_at_ms)
     );
+    const timestampMs = itemTimestampMs || receivedAtMs;
     const output = itemOutputText(item);
     const entry = output
       ? makeLiveEntry(item.type, item.id || 'ipc-item-' + String(index + 1), integer(item.rolloutOrdinal, index + 1), timestampMs, output, 'codex-ipc')
@@ -1738,8 +1738,12 @@ function createLiveAdapter(config, syntheticFile = '', options = {}) {
     let persistedInProgressCount = 0;
     let activeRolloutCount = 0;
     let telemetryErrorCount = 0;
+    // Follow every non-archived Desktop task, not only rows that the slower
+    // SQLite/rollout projections already suspect are active. That makes IPC
+    // the complete authoritative lifecycle source after startup: a long turn
+    // cannot be missed, and a terminal patch removes its card immediately.
+    if (ipcObserver) ipcObserver.setDesired(stateRows.map((row) => String(row.id)));
     const ipcStatus = ipcObserver ? ipcObserver.getStatus() : null;
-    const desiredIpcThreadIds = [];
     for (const row of stateRows) {
       const id = String(row.id);
       const turn = turnData.turns.get(id) || null;
@@ -1786,14 +1790,6 @@ function createLiveAdapter(config, syntheticFile = '', options = {}) {
           telemetry.lastActivityMs = integer(ipcTelemetry.lastActivityMs);
           telemetry.latestActivity = ipcTelemetry.latestActivity || telemetry.latestActivity;
         }
-      }
-      const fallbackClassification = classifyLiveSession(telemetry, now, config);
-      const recentPersistedTurn = normalizeStatus(turn && turn.status) === 'inprogress' &&
-        meta.updatedAtMs > 0 && now - meta.updatedAtMs <= config.activeWindowSeconds * 1000;
-      if (ipcObserver && (
-        telemetry.ipcDirect || fallbackClassification.status === 'RUNNING' || recentPersistedTurn
-      )) {
-        desiredIpcThreadIds.push(id);
       }
       if (telemetry.active) activeRolloutCount += 1;
       if (telemetry.error) telemetryErrorCount += 1;
@@ -1854,7 +1850,6 @@ function createLiveAdapter(config, syntheticFile = '', options = {}) {
       };
       runningSessions.push(session);
     }
-    if (ipcObserver) ipcObserver.setDesired(desiredIpcThreadIds);
     runningSessions.sort((a, b) => {
       return String(b.lastActivityAt || '').localeCompare(String(a.lastActivityAt || ''));
     });
@@ -2195,7 +2190,7 @@ function staticResponse(response, fileName, bootstrapSnapshot = null) {
   const selected = allowed.get(fileName) || allowed.get('/index.html');
   try {
     let body = fs.readFileSync(path.join(root, selected[0]));
-    let contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'";
+    let contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'";
     if (selected[0] === 'index.html' && bootstrapSnapshot) {
       const source = body.toString('utf8');
       const marker = '<!-- CODEX_MONITOR_BOOTSTRAP -->';
@@ -2203,7 +2198,7 @@ function staticResponse(response, fileName, bootstrapSnapshot = null) {
         const nonce = crypto.randomBytes(18).toString('base64');
         const bootstrap = '<script nonce="' + nonce + '" type="application/json" id="codexMonitorBootstrap">' + scriptSafeJson(bootstrapSnapshot) + '</script>';
         body = Buffer.from(source.replace(marker, bootstrap), 'utf8');
-        contentSecurityPolicy = "default-src 'self'; script-src 'self' 'nonce-" + nonce + "'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'";
+        contentSecurityPolicy = "default-src 'self'; script-src 'self' 'nonce-" + nonce + "'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'";
       }
     }
     response.writeHead(200, {
@@ -2397,7 +2392,7 @@ function startServer(options = {}) {
     }
     if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname === '/app.js' || url.pathname === '/styles.css') {
       const inlineBootstrap = (url.pathname === '/' || url.pathname === '/index.html') && authMatches(request, url, token, config.auth.required, config)
-        ? getSnapshot('relevant')
+        ? getSnapshot('relevant', true)
         : null;
       staticResponse(response, url.pathname, inlineBootstrap);
       return;

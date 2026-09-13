@@ -206,6 +206,7 @@ function streamProof(ip) {
   assert.equal(live.summary.displayMode, 'running-only');
   assert.equal(live.summary.liveTransport && live.summary.liveTransport.connected, true);
   assert.equal(live.summary.liveTransport && live.summary.liveTransport.initialized, true);
+  assert.equal(live.summary.liveTransport && live.summary.liveTransport.followingCount, live.summary.totalNonArchived, 'Desktop IPC must follow every non-archived task so no running turn can be missed');
   assert.equal(new Set(live.sessions.map((session) => session.id)).size, live.sessions.length);
   assert.equal(live.sessions.every((session) => session.status === 'RUNNING'), true);
   assert.equal(live.sessions.every((session) => Array.isArray(session.liveOutput)), true);

@@ -75,6 +75,9 @@ test('running-only UI renders 12 simultaneous live transcripts and applies an au
   assert.match(document.querySelector('[data-session-id="synthetic-live-02"] .transcript-state').textContent, /LIVE CODEX ROLLOUT · updating now/);
   assert.doesNotMatch(document.querySelector('[data-session-id="synthetic-live-02"] .transcript-state').textContent, /fallback|waiting/i);
   assert.equal(document.querySelectorAll('.transcript-entry').length, 12);
+  assert.equal(document.querySelectorAll('.transcript-entry-assistant').length, 12);
+  assert.equal(document.querySelectorAll('.transcript-prose').length, 12);
+  assert.equal(document.querySelectorAll('.transcript-entry-latest .transcript-live-badge').length, 12);
   assert.match(streams[0].url, /\/events\?mode=delta&token=test-token$/);
   document.querySelector('#copyButton').dispatchEvent(new Event('click'));
   await new Promise((resolve) => setImmediate(resolve));

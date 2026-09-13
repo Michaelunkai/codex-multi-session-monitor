@@ -251,10 +251,12 @@ test('running-only 12-session dashboard endpoint and SSE update work without Cod
     assert.equal(changedSession.status, 'RUNNING');
     assert.equal(changedSession.liveOutput[0].text, 'Automatic live output received');
     const removedPromise = waitForChangedSignal(port, changedSignal.revision);
+    const removalStartedAt = Date.now();
     fixtureData.sessions[0].status = 'COMPLETED';
     fs.writeFileSync(fixture, JSON.stringify(fixtureData, null, 2), 'utf8');
     const removedSignal = await removedPromise;
     assert.ok(removedSignal.revision > changedSignal.revision);
+    assert.ok(Date.now() - removalStartedAt < 1_000, 'A completed session must disappear from the live wall in under one second.');
     const removedResponse = await requestJson(port, '/api/snapshot?scope=all');
     assert.equal(removedResponse.statusCode, 200);
     const removed = removedResponse.body;
@@ -430,10 +432,12 @@ test('delta SSE appends one changed transcript fragment without re-sending the f
     assert.equal(timingOnly.body.updated.length, 1);
     assert.equal(timingOnly.body.updated[0].id, 'delta-session');
     assert.equal(timingOnly.body.updated[0].output, null, 'timestamp-only IPC refreshes must not rewrite unchanged transcript entries');
+    const removalStartedAt = Date.now();
     fixtureData.sessions[0].status = 'COMPLETED';
     fs.writeFileSync(fixture, JSON.stringify(fixtureData), 'utf8');
     const removed = await stream.next((event) => event.event === 'delta' && event.body.revision > timingOnly.body.revision);
     assert.deepEqual(removed.body.removedIds, ['delta-session']);
+    assert.ok(Date.now() - removalStartedAt < 1_000, 'The delta stream must remove a completed card in under one second.');
   } finally {
     if (stream) stream.close();
     if (running) running.close();

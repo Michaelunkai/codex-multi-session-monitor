@@ -13,6 +13,7 @@ const root = path.resolve(__dirname, '..');
 const dashboardHost = new URL(dashboardUrl).hostname.toLowerCase();
 const isPublicShell = !['127.0.0.1', 'localhost', '::1'].includes(dashboardHost);
 const screenshotPath = path.join(root, 'data', isPublicShell ? 'browser-global-live-proof.png' : 'browser-live-proof.png');
+const transcriptScreenshotPath = path.join(root, 'data', isPublicShell ? 'browser-global-transcript-proof.png' : 'browser-transcript-proof.png');
 const monitorConfig = JSON.parse(fs.readFileSync(path.join(root, 'config', 'monitor.json'), 'utf8'));
 const publicEndpoint = isPublicShell
   ? fs.readFileSync(path.join(root, 'data', 'tailscale', 'public-url.txt'), 'utf8').trim().replace(/\/$/, '')
@@ -150,6 +151,11 @@ const pageStateExpression = String.raw`(() => {
     digest: card.dataset.outputDigest || '',
     width: Math.round(card.getBoundingClientRect().width),
     transcriptHeight: Math.round(card.querySelector('.transcript-scroll')?.getBoundingClientRect().height || 0)
+    ,entryCount: card.querySelectorAll('.transcript-entry').length
+    ,latestBadges: card.querySelectorAll('.transcript-entry-latest .transcript-live-badge').length
+    ,entryKinds: Array.from(card.querySelectorAll('.transcript-entry')).map((entry) => Array.from(entry.classList).find((name) => /^transcript-entry-(assistant|command|tool|file|event)$/.test(name)) || '')
+    ,maxPresentedChars: Math.max(0, ...Array.from(card.querySelectorAll('.transcript-text')).map((entry) => (entry.textContent || '').length))
+    ,outputControls: card.querySelectorAll('.transcript-entry-control').length
   }));
   const error = document.querySelector('#errorNotice');
   const overflows = Array.from(document.querySelectorAll('body *'))
@@ -295,6 +301,23 @@ async function main() {
     assert.ok(state.bodyChars > 500, 'Dashboard body is effectively blank');
     assert.ok(state.scrollWidth <= state.innerWidth + 2, 'Dashboard has horizontal page overflow');
     assert.ok(state.cards.every((card) => card.width >= 360 && card.transcriptHeight >= 80), 'A live card is too narrow or its transcript is collapsed');
+    assert.ok(state.cards.every((card) => card.entryCount > 0 && card.entryCount <= 18), 'A card does not use the bounded readable event timeline');
+    assert.ok(state.cards.every((card) => card.latestBadges === 1), 'Every card must mark exactly one newest event as live');
+    assert.ok(state.cards.every((card) => card.maxPresentedChars <= 16500), 'A raw output dump is flooding the rendered page');
+    assert.ok(state.cards.some((card) => card.entryKinds.some((kind) => kind === 'transcript-entry-assistant')), 'No structured Codex prose entry was rendered');
+    assert.ok(state.cards.some((card) => card.entryKinds.some((kind) => kind === 'transcript-entry-command')), 'No structured terminal entry was rendered');
+
+    await cdp.evaluate(`(() => {
+      const first = document.querySelector('.session-card');
+      if (!first) return false;
+      first.scrollIntoView({ block: 'start' });
+      const transcript = first.querySelector('.transcript-scroll');
+      if (transcript) transcript.scrollTop = transcript.scrollHeight;
+      return true;
+    })()`);
+    await delay(150);
+    const transcriptScreenshot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    fs.writeFileSync(transcriptScreenshotPath, Buffer.from(transcriptScreenshot.data, 'base64'));
 
     const initialSignature = signature(state);
     process.stdout.write('BROWSER_LIVE_PULSE ' + crypto.randomUUID() + '\n');
@@ -363,6 +386,7 @@ async function main() {
       horizontalOverflow: state.scrollWidth > state.innerWidth + 2,
       browserErrors: failures.length,
       screenshotPath,
+      transcriptScreenshotPath,
       cards: state.cards.map((card) => ({
         id: card.id,
         title: card.title,
